@@ -1,4 +1,4 @@
-name: AURO PR
+name: Auto PR
 
 on:
   push:
