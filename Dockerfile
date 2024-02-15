@@ -9,7 +9,6 @@ RUN apt update \
     && chown postgres:postgres /var/lib/postgresql \
     && chmod 700 /var/lib/postgresql
 
-COPY ./patroni-entrypoint.sh ./entrypoint.sh
 USER postgres
 
 ENTRYPOINT /usr/bin/patroni /etc/patroni/config.yml
