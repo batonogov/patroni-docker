@@ -12,4 +12,4 @@ RUN apt update \
 COPY ./patroni-entrypoint.sh ./entrypoint.sh
 USER postgres
 
-ENTRYPOINT /bin/sh /entrypoint.sh
+ENTRYPOINT /usr/bin/patroni /etc/patroni/config.yml
