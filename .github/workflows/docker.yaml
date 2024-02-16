@@ -4,8 +4,9 @@ on:
   push:
     tags: 
       - "*"
-    branches:
-      - '*'
+  pull_request:
+    types:
+      - opened
 
 env:
   # Use docker.io for Docker Hub if empty
