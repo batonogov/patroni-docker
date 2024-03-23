@@ -2,13 +2,13 @@ name: Build Docker images and push to ghcr.io
 
 on:
   push:
-    branches: 
-      - "main"
-    tags: 
-      - "*"
+    branches:
+      - main
+    tags:
+      - '*'
   pull_request:
-    branches: 
-      - "main"
+    branches:
+      - main
 
 env:
   # Use docker.io for Docker Hub if empty

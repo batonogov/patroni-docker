@@ -182,7 +182,7 @@ patroni_postgresql_cluster:
 4. Check `patroni` cluster status
 
     ```sh
-    docker exec patroni patronictl -c /etc/patroni/config.yml list      
+    docker exec patroni patronictl -c /etc/patroni/config.yml list
     + Cluster: patroni (7335802398268055573) ------+---------+---------+----+-----------+
     | Member                | Host                  | Role    | State   | TL | Lag in MB |
     +-----------------------+-----------------------+---------+---------+----+-----------+
@@ -238,8 +238,8 @@ patroni_postgresql_cluster:
 2. Check `psql`
 
 ```sh
-psql -h haproxy_host -p 5000 -U postgres 
+psql -h haproxy_host -p 5000 -U postgres
 
-Password for user postgres: 
+Password for user postgres:
 psql (16.2)
 ```
