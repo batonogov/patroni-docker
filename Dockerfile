@@ -14,4 +14,5 @@ RUN apt update \
 
 USER postgres
 
-ENTRYPOINT /usr/bin/patroni /etc/patroni/config.yml
+ENTRYPOINT ["/usr/bin/patroni"]
+CMD [ "/etc/patroni/config.yml" ]
