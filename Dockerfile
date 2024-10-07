@@ -1,7 +1,7 @@
-FROM postgres:16.4
+FROM postgres:17.0
 
-ENV PATRONI_VERSION=3.3.0-1.pgdg120+1
-ENV PSYCOPG2_VERSION=2.9.9-1.pgdg120+1
+ENV PATRONI_VERSION=4.0.1-1.pgdg120+1
+ENV PSYCOPG2_VERSION=2.9.9-2.pgdg120+1
 
 RUN apt update \
     && apt install -y --no-install-recommends \
