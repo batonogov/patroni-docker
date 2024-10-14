@@ -11,7 +11,7 @@ Start example project:
 docker compose up --detach
 ```
 
-Test connetcion:
+Test **psql** connection:
 
 ```sh
 psql -h localhost -p 5432 -U postgres
