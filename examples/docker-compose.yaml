@@ -46,7 +46,7 @@ services:
       - --enable-v2=true
 
   patroni0: &patroni-base
-    image: ghcr.io/batonogov/patroni-docker:v4.0.1-pg17.0
+    image: ghcr.io/batonogov/patroni-docker:v4.0.2-pg17.0
     entrypoint: [/bin/sh, /entrypoint.sh]
     restart: unless-stopped
     volumes:
