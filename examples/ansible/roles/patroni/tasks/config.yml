@@ -1,0 +1,15 @@
+  - name: Create dir
+    ansible.builtin.file:
+      path: '{{ patroni_config_dir }}'
+      state: directory
+      mode: '755'
+      owner: '999'
+      group: '999'
+
+  - name: Copy patroni config
+    ansible.builtin.template:
+      src: config.yml.j2
+      dest: '{{ patroni_config_dir }}/config.yml'
+      mode: '755'
+    notify:
+      - Restart patroni.service
