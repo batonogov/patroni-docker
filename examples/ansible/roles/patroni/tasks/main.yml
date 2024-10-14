@@ -1,0 +1,5 @@
+  - name: Setup unit file
+    ansible.builtin.import_tasks: service.yml
+
+  - name: Copy config
+    ansible.builtin.import_tasks: config.yml

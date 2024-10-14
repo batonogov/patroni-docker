@@ -1,0 +1,11 @@
+patroni_postgresql_cluster:
+  hosts:
+    patroni-postgresql-01:
+      ansible_host: 10.0.70.55
+    patroni-postgresql-02:
+      ansible_host: 10.0.70.56
+    patroni-postgresql-03:
+      ansible_host: 10.0.70.57
+  vars:
+    ansible_user: infra
+    ansible_port: 22

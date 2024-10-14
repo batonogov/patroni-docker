@@ -1,0 +1,2 @@
+  - name: Setup unit file
+    ansible.builtin.import_tasks: service.yml
