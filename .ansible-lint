@@ -1,0 +1,5 @@
+skip_list:
+- risky-file-permissions
+- yaml[truthy]
+- var-naming[no-role-prefix]
+- yaml[indentation]
