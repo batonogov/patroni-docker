@@ -1,25 +1,25 @@
-  - name: Copy unit file patroni
-    ansible.builtin.template:
-      src: patroni.service.j2
-      dest: /etc/systemd/system/patroni.service
-    notify:
-      - Restart patroni.service
+- name: Copy unit file patroni
+  ansible.builtin.template:
+    src: patroni.service.j2
+    dest: /etc/systemd/system/patroni.service
+  notify:
+  - Restart patroni.service
 
-  - name: Create dirs
-    ansible.builtin.file:
-      path: '{{ item }}'
-      state: directory
-      mode: '0700'
-      owner: '999'
-      group: '999'
-    loop:
-      - '{{ pg_data_dir }}'
-      - '{{ pg_data_dir }}/data'
-    notify:
-      - Restart patroni.service
+- name: Create dirs
+  ansible.builtin.file:
+    path: '{{ item }}'
+    state: directory
+    mode: '0700'
+    owner: '999'
+    group: '999'
+  loop:
+  - '{{ pg_data_dir }}'
+  - '{{ pg_data_dir }}/data'
+  notify:
+  - Restart patroni.service
 
-  - name: Setup patroni.service
-    ansible.builtin.systemd:
-      name: patroni.service
-      state: started
-      enabled: true
+- name: Setup patroni.service
+  ansible.builtin.systemd:
+    name: patroni.service
+    state: started
+    enabled: true

@@ -1,28 +1,28 @@
-  - name: Add Docker GPG key
-    ansible.builtin.apt_key:
-      url: https://download.docker.com/linux/ubuntu/gpg
-      state: present
-      keyring: /etc/apt/trusted.gpg.d/docker.gpg
+- name: Add Docker GPG key
+  ansible.builtin.apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+    keyring: /etc/apt/trusted.gpg.d/docker.gpg
 
-  - name: Add repo
-    ansible.builtin.apt_repository:
-      repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
-      state: present
+- name: Add repo
+  ansible.builtin.apt_repository:
+    repo: deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+    state: present
 
-  - name: Install packages
-    ansible.builtin.apt:
-      name:
-        - docker-ce
-      state: present
-      update_cache: true
+- name: Install packages
+  ansible.builtin.apt:
+    name:
+    - docker-ce
+    state: present
+    update_cache: true
 
-  - name: Gather package facts
-    ansible.builtin.package_facts:
+- name: Gather package facts
+  ansible.builtin.package_facts:
 
-  - name: Copy daemon.json
-    ansible.builtin.copy:
-      src: daemon.json
-      dest: /etc/docker/daemon.json
-      mode: '644'
-    notify:
-      - Restart docker.service
+- name: Copy daemon.json
+  ansible.builtin.copy:
+    src: daemon.json
+    dest: /etc/docker/daemon.json
+    mode: '644'
+  notify:
+  - Restart docker.service

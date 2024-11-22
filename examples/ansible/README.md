@@ -48,5 +48,5 @@ Test **psql** connection:
 ```sh
 psql -h 10.0.70.55 -p 5432 -U postgres
 Password for user postgres:
-psql (17.0)
+psql (17.2, server 17.1 (Debian 17.1-1.pgdg120+1))
 ```
