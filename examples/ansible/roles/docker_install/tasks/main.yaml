@@ -1,4 +1,4 @@
 # tasks file for docker-install
-  - name: Install docker-ce in Ubuntu
-    ansible.builtin.import_tasks: ubuntu.yml
-    when: ansible_distribution == 'Ubuntu'
+- name: Install docker-ce in Ubuntu
+  ansible.builtin.import_tasks: ubuntu.yml
+  when: ansible_distribution == 'Ubuntu'
