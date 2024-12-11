@@ -22,3 +22,13 @@ psql (17.2, server 17.1 (Debian 17.1-1.pgdg120+1))
 Open [localhost:8080](http://localhost:8080) and see **HAProxy Statistics Report**:
 
 ![haproxy.png](./haproxy.png)
+
+## Possible problems
+
+1. fixing permissions on existing directory /var/lib/postgresql/patroni/main
+
+Change ownership of ./patroni-data0/ to user ID 999 with superuser privileges.
+
+```sh
+sudo chown 999 ./patroni-data0/
+```
