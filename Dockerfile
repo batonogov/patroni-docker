@@ -1,12 +1,11 @@
 FROM postgres:17.1
 
-ENV PATRONI_VERSION=4.0.3-2.pgdg120+1
-ENV PSYCOPG2_VERSION=2.9.9-2.pgdg120+1
+ENV PATRONI_VERSION=4.0.4-2.pgdg120+1
 
 RUN apt update \
     && apt install -y --no-install-recommends \
     patroni=${PATRONI_VERSION} \
-    python3-psycopg2=${PSYCOPG2_VERSION} \
+    python3-psycopg2 \
     && apt clean \
     && rm -rf \
     /var/lib/apt/lists/* \
