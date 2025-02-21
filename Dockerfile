@@ -1,4 +1,4 @@
-FROM postgres:17.2
+FROM postgres:17.3
 
 ENV PATRONI_VERSION=4.0.4-2.pgdg120+1
 
