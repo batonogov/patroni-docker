@@ -19,7 +19,7 @@ repos:
         exclude: ./(examples/ansible/roles)/
 
   - repo: https://github.com/ansible-community/ansible-lint.git
-    rev: v25.1.3
+    rev: v25.5.0
     hooks:
       - id: ansible-lint
         files: ./(ansible)/
