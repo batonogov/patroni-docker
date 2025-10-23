@@ -27,6 +27,8 @@ jobs:
       matrix:
         platform: [linux/amd64, linux/arm64]
         distro: [trixie,alpine]
+        pg_version: ["17.6","18.0"]
+        patroni_version: ["4.0.6"]
     
     steps:
     - name: Checkout repository
@@ -49,21 +51,24 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
     
-    - name: Build and push Docker image for ${{ matrix.platform }} ${{ matrix.distro }} 
+    - name: Build and push Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
       id: build-and-push
       uses: docker/build-push-action@v6.18.0
       with:
         context: .
         file: Dockerfile
-        build-args: DISTRO=${{ matrix.distro }}
+        build-args: |
+          DISTRO=${{ matrix.distro }}
+          PG_VERSION=${{ matrix.pg_version }}
+          PATRONI_VERSION=${{ matrix.patroni_version }}
         platforms: ${{ matrix.platform }}
         push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
+        tags: ${{ steps.meta.outputs.tags }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
     
-    - name: Test Docker image
+    - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
       if: github.event_name == 'pull_request'
       run: |
-        docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tags[0] }} patroni --version
+        docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tags[0] }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }} patroni --version
