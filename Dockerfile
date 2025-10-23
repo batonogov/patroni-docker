@@ -1,4 +1,5 @@
-FROM postgres:17.6
+ARG DISTRO=alpine
+FROM postgres:17.6-${DISTRO}
 
 ENV PATRONI_VERSION=4.0.6-1
 
