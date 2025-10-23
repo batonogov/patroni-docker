@@ -1,6 +1,6 @@
-FROM postgres:17.5
+FROM postgres:17.6
 
-ENV PATRONI_VERSION=4.0.5-1.pgdg120+1
+ENV PATRONI_VERSION=4.0.6-1
 
 RUN apt update \
     && apt install -y --no-install-recommends \
