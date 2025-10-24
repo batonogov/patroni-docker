@@ -11,8 +11,7 @@ on:
     - main
 
 env:
-  # Use docker.io for Docker Hub if empty
-  REGISTRY: ghcr.io
+
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
 
@@ -37,21 +36,38 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3.11.1
     
-    - name: Log into registry ${{ env.REGISTRY }}
+    - name: Log into GITHUB registry
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v3.5.0
       with:
-        registry: ${{ env.REGISTRY }}
+        registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Log into Docker Hub
+      uses: docker/login-action@v3.5.0
+      with:
+        registry: docker.io
+        username: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
     
     - name: Extract Docker metadata
       id: meta
       uses: docker/metadata-action@v5.8.0
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ghcr.io/${{ env.IMAGE_NAME }}
+    - name: Debug tags
+      run: |
+        echo "Tags:"
+        for tag in ${{ steps.meta.outputs.tags }}; do
+        echo "$tag"
+        done
+    - name: Extract tags without registry and image name
+      id: extract-tags
+      run: |
+        echo "${{ steps.meta.outputs.tags }}" |  tr ',' '\n' | sed 's|.*/||; s|.*:||' > tags.txt
+        echo "TAGS=$(cat tags.txt | tr '\n' ',' | sed 's|,$||')" >> $GITHUB_ENV
     
-    - name: Build and push Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
+    - name: Build Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
       id: build-and-push
       uses: docker/build-push-action@v6.18.0
       with:
@@ -62,13 +78,38 @@ jobs:
           PG_VERSION=${{ matrix.pg_version }}
           PATRONI_VERSION=${{ matrix.patroni_version }}
         platforms: ${{ matrix.platform }}
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
+        push: false
+        tags: ${{ env.TAGS }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+    - name: Convert tag to lowercase
+      run: |
+           TAG="${{ env.IMAGE_NAME }}:${{ env.TAGS }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
+           echo "LOWER_IMAGE_TAG=$(echo $TAG | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+    - name: Push image to GITHUB registry
+      uses: docker/build-push-action@v6.18.0
+      with:
+        context: .
+        build-args: |
+          DISTRO=${{ matrix.distro }}
+          PG_VERSION=${{ matrix.pg_version }}
+          PATRONI_VERSION=${{ matrix.patroni_version }}
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
+    
+    - name: Push image to Docker Hub
+      uses: docker/build-push-action@v6.18.0
+      with:
+        context: .
+        build-args: |
+          DISTRO=${{ matrix.distro }}
+          PG_VERSION=${{ matrix.pg_version }}
+          PATRONI_VERSION=${{ matrix.patroni_version }}
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: docker.io/${{ env.LOWER_IMAGE_TAG }}
     
     - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
       if: github.event_name == 'pull_request'
       run: |
-        docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tags[0] }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }} patroni --version
+        docker run --rm ghcr.io/${{ env.LOWER_IMAGE_TAG }} patroni --version
