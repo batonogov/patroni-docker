@@ -6,6 +6,13 @@ ARG PATRONI_VERSION
 ENV PATRONI_VERSION=${PATRONI_VERSION}
 ARG DISTRO
 
+LABEL org.opencontainers.image.title="Patroni v.${PATRONI_VERSION} PG v.${PG_VERSION} Docker Image"
+LABEL org.opencontainers.image.description="Image is used for running HA cluster Patroni v.${PATRONI_VERSION} with PostgreSQL v.${PG_VERSION}."
+LABEL org.opencontainers.image.version="${PG_VERSION}-${PATRONI_VERSION}-${DISTRO}"
+LABEL org.opencontainers.image.created="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}"
+LABEL org.opencontainers.image.revision="${GITHUB_SHA}"
+
 # Set the package manager and installation commands based on the distro
 RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}" && \
     if [ "${DISTRO}" = "alpine" ]; then \
