@@ -75,7 +75,10 @@ jobs:
       run: |
         echo "${{ steps.meta.outputs.tags }}" |  tr ',' '\n' | sed 's|.*/||; s|.*:||' > tags.txt
         echo "TAGS=$(cat tags.txt | tr '\n' ',' | sed 's|,$||')" >> $GITHUB_ENV
-    
+    - name: Convert tag to lowercase
+      run: |
+           TAG="${{ env.IMAGE_NAME }}:${{ env.TAGS }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
+           echo "LOWER_IMAGE_TAG=$(echo $TAG | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
     - name: Build Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
       id: build-and-push
       uses: docker/build-push-action@v6.18.0
@@ -86,16 +89,20 @@ jobs:
           DISTRO=${{ matrix.distro }}
           PG_VERSION=${{ matrix.pg_version }}
           PATRONI_VERSION=${{ matrix.patroni_version }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          GITHUB_SHA=${{ github.sha }}
         platforms: ${{ matrix.platform }}
+        load: ${{ github.event_name == 'pull_request' }}
         push: false
-        tags: ${{ env.TAGS }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
+        tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
-    - name: Convert tag to lowercase
+    - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
+      if: github.event_name == 'pull_request'
       run: |
-           TAG="${{ env.IMAGE_NAME }}:${{ env.TAGS }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
-           echo "LOWER_IMAGE_TAG=$(echo $TAG | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        docker run --rm ${{ env.LOWER_IMAGE_TAG }} patroni --version
+        docker run --rm ${{ env.LOWER_IMAGE_TAG }} postgres --version
     - name: Push image to GITHUB registry
       uses: docker/build-push-action@v6.18.0
       with:
@@ -104,6 +111,8 @@ jobs:
           DISTRO=${{ matrix.distro }}
           PG_VERSION=${{ matrix.pg_version }}
           PATRONI_VERSION=${{ matrix.patroni_version }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          GITHUB_SHA=${{ github.sha }}
         push: ${{ github.event_name != 'pull_request' }}
         tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
     
@@ -116,10 +125,8 @@ jobs:
           DISTRO=${{ matrix.distro }}
           PG_VERSION=${{ matrix.pg_version }}
           PATRONI_VERSION=${{ matrix.patroni_version }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          GITHUB_SHA=${{ github.sha }}
         push: ${{ github.event_name != 'pull_request' }}
         tags: docker.io/${{ env.LOWER_IMAGE_TAG }}
     
-    - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
-      if: github.event_name == 'pull_request'
-      run: |
-        docker run --rm ghcr.io/${{ env.LOWER_IMAGE_TAG }} patroni --version
