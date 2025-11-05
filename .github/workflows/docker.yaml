@@ -123,9 +123,15 @@ jobs:
       if: github.event_name == 'pull_request'
       run: |
         IMAGE="ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
-        echo "Testing image: $IMAGE"
-        docker run --rm "$IMAGE" patroni --version
-        docker run --rm "$IMAGE" postgres --version
+        echo "Testing image: $IMAGE  (platform: ${{ matrix.platform }})"
+        if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
+          echo "ARM64 → use QEMU"
+          docker run --rm --platform linux/arm64 "$IMAGE" patroni --version
+          docker run --rm --platform linux/arm64 "$IMAGE" postgres --version
+        else
+          docker run --rm "$IMAGE" patroni --version
+          docker run --rm "$IMAGE" postgres --version
+        fi
     - name: Push image to GITHUB registry
       uses: docker/build-push-action@v6.18.0
       with:
