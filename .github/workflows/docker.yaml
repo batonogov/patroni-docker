@@ -6,13 +6,18 @@ on:
     - main
     tags:
     - '*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag'
+        required: false
+        default: ''
   pull_request:
     branches:
     - main
 
 env:
-  # Use docker.io for Docker Hub if empty
-  REGISTRY: ghcr.io
+
   # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
 
@@ -23,39 +28,137 @@ jobs:
       contents: read
       packages: write
       id-token: write
-
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+        distro: [trixie,alpine]
+        pg_version: ["17.6","18.0"]
+        patroni_version: ["4.0.6"]
+    
     steps:
     - name: Checkout repository
       uses: actions/checkout@v5
-
+    - name: Set up QEMU
+      if: ${{ matrix.platform }} == 'linux/arm64'
+      uses: docker/setup-qemu-action@v1
+    
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3.11.1
-
-    - name: Log into registry ${{ env.REGISTRY }}
+    
+    - name: Log into GITHUB registry
       if: github.event_name != 'pull_request'
       uses: docker/login-action@v3.5.0
       with:
-        registry: ${{ env.REGISTRY }}
+        registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-
+    - name: Check if Docker Hub secrets are set
+      id: check_secrets
+      run: |
+          if [ -n "${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}" ]; then
+          echo "secrets_available=true" >> $GITHUB_OUTPUT
+          else
+             echo "secrets_available=false" >> $GITHUB_OUTPUT
+          fi
+    - name: Log into Docker Hub
+      if: steps.check_secrets.outputs.secrets_available == 'true'
+      uses: docker/login-action@v3.5.0
+      with:
+        registry: docker.io
+        username: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
+    
     - name: Extract Docker metadata
       id: meta
       uses: docker/metadata-action@v5.8.0
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ghcr.io/${{ env.IMAGE_NAME }}
+    - name: Debug tags
+      run: |
+        echo "Tags:"
+        for tag in ${{ steps.meta.outputs.tags }}; do
+        echo "$tag"
+        done
+    - name: Extract tags without registry and image name
+      id: extract-tags
+      run: |
+        echo "${{ steps.meta.outputs.tags }}" |  tr ',' '\n' | sed 's|.*/||; s|.*:||' > tags.txt
+        echo "TAGS=$(cat tags.txt | tr '\n' ',' | sed 's|,$||')" >> $GITHUB_ENV
+    - name: Override base tag with custom input (if provided)
+      run: |
+        BASE_TAG="${{ env.TAGS }}"
+        if [ -n "${{ inputs.tag }}" ]; then
+          BASE_TAG="${{ inputs.tag }}"
+          echo "Custom tag '${{ inputs.tag }}' will be use as base tag"
+        else
+          echo "Custom tag is not set → use tag from metadata: $BASE_TAG"
+        fi
+        echo "BASE_TAG=$BASE_TAG" >> $GITHUB_ENV
 
-    - name: Build and push Docker image
-      id: build-and-push
+    - name: Build final LOWER_IMAGE_TAG
+      run: |
+        FINAL="${{ env.IMAGE_NAME }}:${BASE_TAG}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
+        echo "LOWER_IMAGE_TAG=$(echo "$FINAL" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        echo "Final tag → ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
+    - name: Export final base tag
+      id: set-tag
+      run: echo "tag=${BASE_TAG}" >> $GITHUB_OUTPUT
+    - name: Build Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
+      id: build_image
       uses: docker/build-push-action@v6.18.0
       with:
         context: .
         file: Dockerfile
-        platforms: |
-          linux/amd64
-          linux/arm64
-        push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
+        build-args: |
+          DISTRO=${{ matrix.distro }}
+          PG_VERSION=${{ matrix.pg_version }}
+          PATRONI_VERSION=${{ matrix.patroni_version }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          GITHUB_SHA=${{ github.sha }}
+        platforms: ${{ matrix.platform }}
+        load: ${{ github.event_name == 'pull_request' }}
+        push: false
+        tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+    - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
+      if: github.event_name == 'pull_request'
+      run: |
+        IMAGE="ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
+        echo "Testing image: $IMAGE  (platform: ${{ matrix.platform }})"
+        if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
+          echo "ARM64 → use QEMU"
+          docker run --rm --platform linux/arm64 "$IMAGE" patroni --version
+          docker run --rm --platform linux/arm64 "$IMAGE" postgres --version
+        else
+          docker run --rm "$IMAGE" patroni --version
+          docker run --rm "$IMAGE" postgres --version
+        fi
+    - name: Push image to GITHUB registry
+      uses: docker/build-push-action@v6.18.0
+      with:
+        context: .
+        build-args: |
+          DISTRO=${{ matrix.distro }}
+          PG_VERSION=${{ matrix.pg_version }}
+          PATRONI_VERSION=${{ matrix.patroni_version }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          GITHUB_SHA=${{ github.sha }}
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
+    
+    - name: Push image to Docker Hub
+      if: steps.check_secrets.outputs.secrets_available == 'true'
+      uses: docker/build-push-action@v6.18.0
+      with:
+        context: .
+        build-args: |
+          DISTRO=${{ matrix.distro }}
+          PG_VERSION=${{ matrix.pg_version }}
+          PATRONI_VERSION=${{ matrix.patroni_version }}
+          GITHUB_REPOSITORY=${{ github.repository }}
+          GITHUB_SHA=${{ github.sha }}
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: docker.io/${{ env.LOWER_IMAGE_TAG }}
+    
