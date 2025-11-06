@@ -5,6 +5,8 @@ FROM postgres:${PG_VERSION}-${DISTRO}
 ARG PATRONI_VERSION
 ENV PATRONI_VERSION=${PATRONI_VERSION}
 ARG DISTRO
+ARG GITHUB_REPOSITORY
+ARG GITHUB_SHA
 
 LABEL org.opencontainers.image.title="Patroni v.${PATRONI_VERSION} PG v.${PG_VERSION} Docker Image"
 LABEL org.opencontainers.image.description="Image is used for running HA cluster Patroni v.${PATRONI_VERSION} with PostgreSQL v.${PG_VERSION}."

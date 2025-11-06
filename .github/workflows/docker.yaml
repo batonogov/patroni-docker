@@ -6,6 +6,12 @@ on:
     - main
     tags:
     - '*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag'
+        required: false
+        default: ''
   pull_request:
     branches:
     - main
@@ -32,6 +38,9 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v5
+    - name: Set up QEMU
+      if: ${{ matrix.platform }} == 'linux/arm64'
+      uses: docker/setup-qemu-action@v1
     
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3.11.1
@@ -75,12 +84,27 @@ jobs:
       run: |
         echo "${{ steps.meta.outputs.tags }}" |  tr ',' '\n' | sed 's|.*/||; s|.*:||' > tags.txt
         echo "TAGS=$(cat tags.txt | tr '\n' ',' | sed 's|,$||')" >> $GITHUB_ENV
-    - name: Convert tag to lowercase
+    - name: Override base tag with custom input (if provided)
       run: |
-           TAG="${{ env.IMAGE_NAME }}:${{ env.TAGS }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
-           echo "LOWER_IMAGE_TAG=$(echo $TAG | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        BASE_TAG="${{ env.TAGS }}"
+        if [ -n "${{ inputs.tag }}" ]; then
+          BASE_TAG="${{ inputs.tag }}"
+          echo "Custom tag '${{ inputs.tag }}' will be use as base tag"
+        else
+          echo "Custom tag is not set → use tag from metadata: $BASE_TAG"
+        fi
+        echo "BASE_TAG=$BASE_TAG" >> $GITHUB_ENV
+
+    - name: Build final LOWER_IMAGE_TAG
+      run: |
+        FINAL="${{ env.IMAGE_NAME }}:${BASE_TAG}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
+        echo "LOWER_IMAGE_TAG=$(echo "$FINAL" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        echo "Final tag → ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
+    - name: Export final base tag
+      id: set-tag
+      run: echo "tag=${BASE_TAG}" >> $GITHUB_OUTPUT
     - name: Build Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
-      id: build-and-push
+      id: build_image
       uses: docker/build-push-action@v6.18.0
       with:
         context: .
@@ -101,8 +125,16 @@ jobs:
     - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
       if: github.event_name == 'pull_request'
       run: |
-        docker run --rm ${{ env.LOWER_IMAGE_TAG }} patroni --version
-        docker run --rm ${{ env.LOWER_IMAGE_TAG }} postgres --version
+        IMAGE="ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
+        echo "Testing image: $IMAGE  (platform: ${{ matrix.platform }})"
+        if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
+          echo "ARM64 → use QEMU"
+          docker run --rm --platform linux/arm64 "$IMAGE" patroni --version
+          docker run --rm --platform linux/arm64 "$IMAGE" postgres --version
+        else
+          docker run --rm "$IMAGE" patroni --version
+          docker run --rm "$IMAGE" postgres --version
+        fi
     - name: Push image to GITHUB registry
       uses: docker/build-push-action@v6.18.0
       with:
