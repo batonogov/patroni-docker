@@ -70,7 +70,7 @@ jobs:
     
     - name: Extract Docker metadata
       id: meta
-      uses: docker/metadata-action@v5.8.0
+      uses: docker/metadata-action@v5.9.0
       with:
         images: ghcr.io/${{ env.IMAGE_NAME }}
     - name: Debug tags
