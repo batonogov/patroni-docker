@@ -56,6 +56,11 @@ image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
 
 ## Building locally
 
+A `.dockerignore` excludes everything except `Dockerfile` (the Dockerfile does
+not COPY/ADD any context files), so the build context is a few KB even though
+the working tree contains ~200 MB of local Postgres data under
+`examples/docker/patroni-data*`.
+
 `DISTRO` (default `trixie`) and `PG_VERSION` (default `17.6`) are optional;
 `PATRONI_VERSION` is the only required arg. A bare `docker build .` fails
 loudly unless you pass `--build-arg PATRONI_VERSION=…`.
@@ -110,9 +115,16 @@ Python/Postgres dependencies.
 to override the base tag). Per matrix cell it:
 
 1. builds the image (`docker/build-push-action`, `load:` on PRs, `push:false`),
-2. runs the `patroni --version` / `postgres --version` smoke test **on PRs only**,
-3. pushes to `ghcr.io` (always, except PRs),
-4. pushes to `docker.io` **only if Docker Hub secrets are present**.
+2. runs the `patroni --version` + `postgres --version` smoke test **on PRs only**
+   (the `postgres` check overrides the patroni ENTRYPOINT via `--entrypoint
+   /bin/sh`, otherwise patroni would swallow the arg and it would be a no-op),
+3. scans the loaded image with **Trivy** (`HIGH,CRITICAL`, `exit-code: 1`) **on
+   PRs only** — this is the vulnerability gate before merge,
+4. pushes to `ghcr.io` (always, except PRs) and exposes its digest as
+   `steps.push-ghcr.outputs.digest`,
+5. pushes to `docker.io` **only if Docker Hub secrets are present**,
+6. signs the published GHCR image with **cosign** keyless (OIDC) **on non-PRs**.
+   Cosign runs *last*, so a signing failure does not block publication.
 
 Registries and the secrets that gate them:
 
@@ -123,8 +135,8 @@ Registries and the secrets that gate them:
   skipped silently; this is intentional, not a failure.
 
 The job grants `packages: write` (to push to ghcr) and `id-token: write`
-(intended for future keyless signing via OIDC; currently unused — there is no
-cosign step). The build uses `cache-from/to: type=gha`.
+(used for keyless cosign signing of the published image via GitHub OIDC). The
+build uses `cache-from/to: type=gha`.
 
 ## Examples (reference deployments, not production)
 
