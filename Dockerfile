@@ -1,5 +1,5 @@
-ARG DISTRO
-ARG PG_VERSION
+ARG DISTRO=trixie
+ARG PG_VERSION=17.6
 FROM postgres:${PG_VERSION}-${DISTRO}
 
 ARG PATRONI_VERSION
@@ -32,8 +32,15 @@ RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}
       && rm -rf /var/cache/apk/*; \
     else \
       apt update \
+      && PATRONI_DEB_VERSION=$(apt-cache madison patroni \
+           | awk -F'|' '{ gsub(/[ \t]/, "", $2); print $2 }' \
+           | grep -m1 "^${PATRONI_VERSION}-" || true) \
+      && if [ -z "${PATRONI_DEB_VERSION}" ]; then \
+           echo "ERROR: patroni ${PATRONI_VERSION} not found in enabled apt sources" >&2; exit 1; \
+         fi \
+      && echo "Resolved patroni debian version: ${PATRONI_DEB_VERSION}" \
       && apt install -y --no-install-recommends \
-        patroni=${PATRONI_VERSION}-1 \
+        patroni=${PATRONI_DEB_VERSION} \
         python3-psycopg2 \
       && apt clean all \
       && rm -rf \
