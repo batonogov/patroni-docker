@@ -33,7 +33,8 @@ RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}
     else \
       apt update \
       && PATRONI_DEB_VERSION=$(apt-cache madison patroni \
-           | awk -F'|' -v v="${PATRONI_VERSION}" '{ gsub(/^[ \t]+|[ \t]+$/,"",$2); if ($2 ~ "^"v"-") { print $2; exit } }') \
+           | awk -F'|' '{ gsub(/[ \t]/, "", $2); print $2 }' \
+           | grep -m1 "^${PATRONI_VERSION}-" || true) \
       && if [ -z "${PATRONI_DEB_VERSION}" ]; then \
            echo "ERROR: patroni ${PATRONI_VERSION} not found in enabled apt sources" >&2; exit 1; \
          fi \
