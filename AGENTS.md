@@ -39,14 +39,14 @@ When you change any of these, you change the whole published surface:
 | `platform`       | `linux/amd64`, `linux/arm64` |
 | `distro`         | `trixie`, `alpine`      |
 | `pg_version`     | `17.6`, `18.0`          |
-| `patroni_version`| `4.0.6`                 |
+| `patroni_version`| `4.0.7`                 |
 
 The image tag is built deterministically as:
 
 ```
 ${BASE_TAG}-${pg_version}-${patroni_version}-${distro}   # lowercased
-# example on a push to main:  main-17.6-4.0.6-trixie
-# example for a tag v1.2.3 :  v1.2.3-17.6-4.0.6-alpine
+# example on a push to main:  main-17.6-4.0.7-trixie
+# example for a tag v1.2.3 :  v1.2.3-17.6-4.0.7-alpine
 ```
 
 `BASE_TAG` comes from `docker/metadata-action` defaults (branch name, git tag,
@@ -55,22 +55,27 @@ or PR ref). The full image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
 
 ## Building locally
 
-The Dockerfile takes build args; all three are required:
+`DISTRO` (default `trixie`) and `PG_VERSION` (default `17.6`) are optional;
+`PATRONI_VERSION` is the only required arg. A bare `docker build .` fails
+loudly unless you pass `--build-arg PATRONI_VERSION=…`.
 
 ```sh
 docker build \
   --build-arg DISTRO=alpine \
   --build-arg PG_VERSION=17.6 \
-  --build-arg PATRONI_VERSION=4.0.6 \
+  --build-arg PATRONI_VERSION=4.0.7 \
   -t patroni-docker:local-alpine-17.6 \
   .
 ```
 
-Smoke-test an image the way CI does (PR path runs `--load` then these checks):
+Smoke-test that the binaries start. The image's ENTRYPOINT is
+`/usr/bin/patroni`, which silently ignores unknown args, so to actually run
+`postgres` you must override the entrypoint (CI's `postgres --version` step does
+not, making it a no-op):
 
 ```sh
 docker run --rm patroni-docker:local-alpine-17.6 patroni --version
-docker run --rm patroni-docker:local-alpine-17.6 postgres --version
+docker run --rm --entrypoint /bin/sh patroni-docker:local-alpine-17.6 -c 'postgres --version'
 ```
 
 > Building `linux/arm64` on an amd64 host requires QEMU/binfmt; CI sets that up
@@ -84,9 +89,13 @@ The single `Dockerfile` branches on `DISTRO`:
 - **`alpine`** → `apk add python3 py3-pip py3-psycopg py3-psycopg-c py3-psycopg2
   py3-psutil`, then `pip install "patroni[psycopg2,psycopg3,all]"==$VERSION`.
   Source of truth for available versions: [PyPI](https://pypi.org/project/patroni/).
-- **`trixie`** (Debian) → `apt install patroni=$VERSION-1 python3-psycopg2`.
-  Source of truth for available versions: Debian trixie **and** the PGDG apt
-  repo that is already enabled inside the official `postgres` image.
+- **`trixie`** (Debian) → resolves the exact Debian package version from the
+  upstream `PATRONI_VERSION` at build time (`apt-cache madison patroni`), then
+  `apt install patroni=<resolved> python3-psycopg2`. The Debian revision
+  (`-3~deb13u1`, `-2.pgdg13+1`, …) is **not** hardcoded: `apt` requires an exact
+  full-version match and that revision is chosen by the distro maintainer, not
+  us. Sources: Debian trixie main **and** the PGDG `trixie-pgdg` repo already
+  enabled inside the official `postgres` image.
 
 Both paths: run as the `postgres` user, `ENTRYPOINT ["/usr/bin/patroni"]`,
 `CMD ["/etc/patroni/config.yml"]`. Keep the two paths in sync when adding
@@ -137,13 +146,15 @@ Both examples are explicitly labeled **"Do not use for production."**
 
 ## Linting and formatting
 
-`pre-commit` runs:
+`pre-commit` runs the standard hooks plus `pretty-format-yaml` and `ansible-lint`
+v25.5.0; the canonical list lives in `.pre-commit-config.yaml`. Two non-obvious
+exclusions: `pretty-format-yaml` skips `examples/ansible/roles/`, and
+`check-added-large-files` skips `examples/docker/haproxy.png`.
 
-- `check-yaml`, `trailing-whitespace`, `end-of-file-fixer`, `check-case-conflict`,
-  `check-merge-conflict`, `detect-private-key`
-- `check-added-large-files` (excludes `examples/docker/haproxy.png`)
-- `pretty-format-yaml` (excludes `examples/ansible/roles/`)
-- `ansible-lint` v25.5.0 over `examples/ansible/`
+Wrinkle: ansible-lint does its own file discovery and also reports pre-existing
+`yaml[line-length]` / `yaml[empty-lines]` violations in
+`.github/workflows/docker.yaml` (those rules are not in `.ansible-lint`'s
+`skip_list`). They are cosmetic and do not affect builds.
 
 Before pushing, run `pre-commit run --all-files`.
 
@@ -163,7 +174,11 @@ These are real, verified traps in the current tree:
    the matrix uses `4.0.7` (PyPI ✅, Debian trixie main `4.0.7-3~deb13u1` ✅);
    `4.0.6` is **not** in trixie and was the original cause of the red CI. Before
    bumping, verify with `apt-cache madison patroni` inside the base image and
-   check PyPI; note PGDG trixie only carries `4.1.x`, Debian main carries `4.0.7`.
+   cross-check PyPI — a version must exist in **both**. Verified trixie apt
+   availability as of this commit: `4.0.7` (Debian main), `4.1.0`, `4.1.2`,
+   `4.1.3` (PGDG); PyPI additionally has `4.0.6`/`4.0.8`/`4.0.9`/`4.1.1`, which
+   are **not** buildable for trixie. So the buildable-for-both set is currently
+   `4.0.7, 4.1.0, 4.1.2, 4.1.3`.
 
 2. **The QEMU `if:` condition is buggy.** In `docker.yaml`:
    `if: ${{ matrix.platform }} == 'linux/arm64'` is always truthy, so QEMU is
