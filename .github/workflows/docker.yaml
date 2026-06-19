@@ -130,12 +130,21 @@ jobs:
         if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
           echo "ARM64 → use QEMU"
           docker run --rm --platform linux/arm64 "$IMAGE" patroni --version
-          docker run --rm --platform linux/arm64 "$IMAGE" postgres --version
+          docker run --rm --platform linux/arm64 --entrypoint /bin/sh "$IMAGE" -c 'postgres --version'
         else
           docker run --rm "$IMAGE" patroni --version
-          docker run --rm "$IMAGE" postgres --version
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'postgres --version'
         fi
+    - name: Scan image for vulnerabilities (Trivy)
+      if: github.event_name == 'pull_request'
+      uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        image-ref: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
+        severity: HIGH,CRITICAL
+        exit-code: '1'
+        ignore-unfixed: true
     - name: Push image to GITHUB registry
+      id: push-ghcr
       uses: docker/build-push-action@v7.0.0
       with:
         context: .
@@ -161,4 +170,15 @@ jobs:
           GITHUB_SHA=${{ github.sha }}
         push: ${{ github.event_name != 'pull_request' }}
         tags: docker.io/${{ env.LOWER_IMAGE_TAG }}
+
+    - name: Install cosign
+      if: github.event_name != 'pull_request'
+      uses: sigstore/cosign-installer@v4.1.2
+
+    - name: Sign published GHCR image
+      if: github.event_name != 'pull_request'
+      env:
+        DIGEST: ${{ steps.push-ghcr.outputs.digest }}
+      run: |
+        cosign sign --yes "ghcr.io/${{ env.IMAGE_NAME }}@${DIGEST}"
     
