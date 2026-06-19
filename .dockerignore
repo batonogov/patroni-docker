@@ -1,0 +1,7 @@
+# The Dockerfile does not COPY/ADD anything from the repository, so the build
+# context only needs the Dockerfile itself. Excluding everything else keeps
+# the context tiny (a few KB instead of ~200 MB) and, importantly, prevents
+# the local Postgres runtime data under examples/docker/patroni-data* (which
+# is gitignored but present on disk) from being uploaded to the builder.
+*
+!Dockerfile
