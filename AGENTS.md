@@ -49,8 +49,9 @@ ${BASE_TAG}-${pg_version}-${patroni_version}-${distro}   # lowercased
 # example for a tag v1.2.3 :  v1.2.3-17.6-4.0.7-alpine
 ```
 
-`BASE_TAG` comes from `docker/metadata-action` defaults (branch name, git tag,
-or PR ref). The full image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
+`BASE_TAG` comes from `docker/metadata-action` (branch name, git tag, or PR
+ref), or from the manual `workflow_dispatch` `inputs.tag` when set. The full
+image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
 `docker.io/batonogov/patroni-docker:<tag>`.
 
 ## Building locally
@@ -86,8 +87,9 @@ docker run --rm --entrypoint /bin/sh patroni-docker:local-alpine-17.6 -c 'postgr
 
 The single `Dockerfile` branches on `DISTRO`:
 
-- **`alpine`** → `apk add python3 py3-pip py3-psycopg py3-psycopg-c py3-psycopg2
-  py3-psutil`, then `pip install "patroni[psycopg2,psycopg3,all]"==$VERSION`.
+- **`alpine`** → `apk add musl-locales python3 py3-pip py3-psycopg
+  py3-psycopg-c py3-psycopg2 py3-psutil`, then
+  `pip install "patroni[psycopg2,psycopg3,all]"==$VERSION`.
   Source of truth for available versions: [PyPI](https://pypi.org/project/patroni/).
 - **`trixie`** (Debian) → resolves the exact Debian package version from the
   upstream `PATRONI_VERSION` at build time (`apt-cache madison patroni`), then
@@ -103,8 +105,9 @@ Python/Postgres dependencies.
 
 ## CI/CD
 
-`.github/workflows/docker.yaml` triggers on push to `main`, tags, and PRs to
-`main`. Per matrix cell it:
+`.github/workflows/docker.yaml` triggers on push to `main`, tags, PRs to
+`main`, and manual `workflow_dispatch` (which accepts an optional `inputs.tag`
+to override the base tag). Per matrix cell it:
 
 1. builds the image (`docker/build-push-action`, `load:` on PRs, `push:false`),
 2. runs the `patroni --version` / `postgres --version` smoke test **on PRs only**,
@@ -119,8 +122,9 @@ Registries and the secrets that gate them:
   `DOCKERHUB_REGISTRY_PASSWORD`. If they are absent the Docker Hub push step is
   skipped silently; this is intentional, not a failure.
 
-`GITHUB_TOKEN` needs `packages: write` and `id-token: write` (already set on the
-job). The build uses `cache-from/to: type=gha`.
+The job grants `packages: write` (to push to ghcr) and `id-token: write`
+(intended for future keyless signing via OIDC; currently unused — there is no
+cosign step). The build uses `cache-from/to: type=gha`.
 
 ## Examples (reference deployments, not production)
 
@@ -134,7 +138,9 @@ Both examples are explicitly labeled **"Do not use for production."**
   `entrypoint.sh` derives the container IP and exports the Patroni env vars
   (`PATRONI_*`) from `REPLICATION_NAME/PASS`, `SU_NAME/PASS`,
   `POSTGRES_APP_ROLE_PASS`. Postgres data is bind-mounted under
-  `./patroni-data{0,1,2}/` — see the data-files landmine below.
+  `./patroni-data{0,1,2}/`; those dirs are gitignored (`patroni-data*` in
+  `.gitignore`) and are local runtime artifacts (~200 MB), never committed —
+  never `git add -f` them.
 
 - **Ansible** (`examples/ansible/`): targets 3 hosts in `inventory.yaml`, runs
   the `docker_install`, `etcd`, and `patroni` roles.
@@ -175,7 +181,8 @@ These are real, verified traps in the current tree:
    `4.0.6` is **not** in trixie and was the original cause of the red CI. Before
    bumping, verify with `apt-cache madison patroni` inside the base image and
    cross-check PyPI — a version must exist in **both**. Verified trixie apt
-   availability as of this commit: `4.0.7` (Debian main), `4.1.0`, `4.1.2`,
+   availability as of this commit (verified by running `apt-cache madison
+   patroni` inside `postgres:*-trixie`): `4.0.7` (Debian main), `4.1.0`, `4.1.2`,
    `4.1.3` (PGDG); PyPI additionally has `4.0.6`/`4.0.8`/`4.0.9`/`4.1.1`, which
    are **not** buildable for trixie. So the buildable-for-both set is currently
    `4.0.7, 4.1.0, 4.1.2, 4.1.3`.
@@ -185,13 +192,7 @@ These are real, verified traps in the current tree:
    installed even on amd64 jobs. Correct form is
    `if: matrix.platform == 'linux/arm64'` (no `${{ }}` around the comparison).
 
-3. **Live Postgres data is committed under `examples/docker/patroni-data2/`.**
-   This includes `pg_wal/*`, `pg_replslot/*`, `postmaster.pid`, and config files.
-   Treat these as accidental commits — do not edit them, and prefer
-   gitignoring/removing them rather than modifying in place. Never copy this
-   pattern.
-
-4. **Separate build and push steps.** The workflow builds once (`push:false`),
+3. **Separate build and push steps.** The workflow builds once (`push:false`),
    then pushes with two more `build-push-action` invocations (ghcr, then Docker
    Hub). Don't "optimize" this into a single `push:` step without confirming the
    PR smoke-test path still works, since `load:` is only set on the first step.
