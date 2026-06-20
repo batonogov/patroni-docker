@@ -32,7 +32,7 @@ jobs:
       matrix:
         platform: [linux/amd64, linux/arm64]
         distro: [trixie, alpine]
-        pg_version: ['17.6', '18.0']
+        pg_version: ['17.10', '18.4']
         patroni_version: [4.0.7]
 
     steps:

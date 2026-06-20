@@ -1,5 +1,5 @@
 ARG DISTRO=trixie
-ARG PG_VERSION=17.6
+ARG PG_VERSION=17.10
 FROM postgres:${PG_VERSION}-${DISTRO}
 
 ARG PATRONI_VERSION
@@ -19,6 +19,7 @@ LABEL org.opencontainers.image.revision="${GITHUB_SHA}"
 RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}" && \
     if [ "${DISTRO}" = "alpine" ]; then \
       apk update \
+      && apk upgrade --no-cache \
       && apk add --no-cache \
         musl-locales \
         python3 \
@@ -32,6 +33,9 @@ RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}
       && rm -rf /var/cache/apk/*; \
     else \
       apt update \
+      && PG_MAJOR=$(ls /usr/lib/postgresql) \
+      && apt-mark hold postgresql-${PG_MAJOR} postgresql-client-${PG_MAJOR} \
+      && apt-get upgrade -y \
       && PATRONI_DEB_VERSION=$(apt-cache madison patroni \
            | awk -F'|' '{ gsub(/[ \t]/, "", $2); print $2 }' \
            | grep -m1 "^${PATRONI_VERSION}-" || true) \
@@ -49,7 +53,8 @@ RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}
     fi \
     && mkdir -p /var/lib/postgresql \
     && chown postgres:postgres /var/lib/postgresql \
-    && chmod 700 /var/lib/postgresql
+    && chmod 700 /var/lib/postgresql \
+    && rm -f /usr/local/bin/gosu
 
 USER postgres
 
