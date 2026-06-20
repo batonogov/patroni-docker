@@ -38,15 +38,15 @@ When you change any of these, you change the whole published surface:
 |------------------|-------------------------|
 | `platform`       | `linux/amd64`, `linux/arm64` |
 | `distro`         | `trixie`, `alpine`      |
-| `pg_version`     | `17.6`, `18.0`          |
+| `pg_version`     | `17.10`, `18.4`         |
 | `patroni_version`| `4.0.7`                 |
 
 The image tag is built deterministically as:
 
 ```
 ${BASE_TAG}-${pg_version}-${patroni_version}-${distro}   # lowercased
-# example on a push to main:  main-17.6-4.0.7-trixie
-# example for a tag v1.2.3 :  v1.2.3-17.6-4.0.7-alpine
+# example on a push to main:  main-17.10-4.0.7-trixie
+# example for a tag v1.2.3 :  v1.2.3-17.10-4.0.7-alpine
 ```
 
 `BASE_TAG` comes from `docker/metadata-action` (branch name, git tag, or PR
@@ -61,16 +61,16 @@ not COPY/ADD any context files), so the build context is a few KB even though
 the working tree contains ~200 MB of local Postgres data under
 `examples/docker/patroni-data*`.
 
-`DISTRO` (default `trixie`) and `PG_VERSION` (default `17.6`) are optional;
+`DISTRO` (default `trixie`) and `PG_VERSION` (default `17.10`) are optional;
 `PATRONI_VERSION` is the only required arg. A bare `docker build .` fails
 loudly unless you pass `--build-arg PATRONI_VERSION=…`.
 
 ```sh
 docker build \
   --build-arg DISTRO=alpine \
-  --build-arg PG_VERSION=17.6 \
+  --build-arg PG_VERSION=17.10 \
   --build-arg PATRONI_VERSION=4.0.7 \
-  -t patroni-docker:local-alpine-17.6 \
+  -t patroni-docker:local-alpine-17.10 \
   .
 ```
 
@@ -80,8 +80,8 @@ Smoke-test that the binaries start. The image's ENTRYPOINT is
 not, making it a no-op):
 
 ```sh
-docker run --rm patroni-docker:local-alpine-17.6 patroni --version
-docker run --rm --entrypoint /bin/sh patroni-docker:local-alpine-17.6 -c 'postgres --version'
+docker run --rm patroni-docker:local-alpine-17.10 patroni --version
+docker run --rm --entrypoint /bin/sh patroni-docker:local-alpine-17.10 -c 'postgres --version'
 ```
 
 > Building `linux/arm64` on an amd64 host requires QEMU/binfmt; CI sets that up
@@ -107,6 +107,22 @@ The single `Dockerfile` branches on `DISTRO`:
 Both paths: run as the `postgres` user, `ENTRYPOINT ["/usr/bin/patroni"]`,
 `CMD ["/etc/patroni/config.yml"]`. Keep the two paths in sync when adding
 Python/Postgres dependencies.
+
+**Security hardening (both paths).** Each install path upgrades base-image
+packages to clear HIGH/CRITICAL CVEs (gated by the Trivy scan in CI): alpine
+runs `apk upgrade --no-cache`; trixie runs `apt-get upgrade -y` but first
+`apt-mark hold`s `postgresql-<major>` / `postgresql-client-<major>` (major
+derived from `/usr/lib/postgresql/`) so the upgrade patches library CVEs
+(openssl, gnutls, …) **without bumping the PostgreSQL point release** away
+from the matrix-pinned version — the image tag must stay honest. Both paths
+also `rm -f /usr/local/bin/gosu`: gosu is a Go binary shipped by the stock
+`postgres` image that carries Go-stdlib CVEs, and it is unused here (our
+entrypoint is patroni running as the non-root `postgres` user; patroni never
+shells out to gosu). Removing it clears those CVEs and shaves ~2 MB.
+
+The pg_version baseline (`17.10`, `18.4`) is chosen so the base image already
+contains the PostgreSQL-server CVE fixes; do not let it fall behind the
+fixed-in version of any open CVE, or the Trivy gate will fail.
 
 ## CI/CD
 
