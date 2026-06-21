@@ -38,15 +38,15 @@ When you change any of these, you change the whole published surface:
 |------------------|-------------------------|
 | `platform`       | `linux/amd64`, `linux/arm64` |
 | `distro`         | `trixie`, `alpine`      |
-| `pg_version`     | `17.6`, `18.0`          |
+| `pg_version`     | `17.10`, `18.4`         |
 | `patroni_version`| `4.0.7`                 |
 
 The image tag is built deterministically as:
 
 ```
 ${BASE_TAG}-${pg_version}-${patroni_version}-${distro}   # lowercased
-# example on a push to main:  main-17.6-4.0.7-trixie
-# example for a tag v1.2.3 :  v1.2.3-17.6-4.0.7-alpine
+# example on a push to main:  main-17.10-4.0.7-trixie
+# example for a tag v1.2.3 :  v1.2.3-17.10-4.0.7-alpine
 ```
 
 `BASE_TAG` comes from `docker/metadata-action` (branch name, git tag, or PR
@@ -56,27 +56,32 @@ image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
 
 ## Building locally
 
-`DISTRO` (default `trixie`) and `PG_VERSION` (default `17.6`) are optional;
+A `.dockerignore` excludes everything except `Dockerfile` (the Dockerfile does
+not COPY/ADD any context files), so the build context is a few KB even though
+the working tree contains ~200 MB of local Postgres data under
+`examples/docker/patroni-data*`.
+
+`DISTRO` (default `trixie`) and `PG_VERSION` (default `17.10`) are optional;
 `PATRONI_VERSION` is the only required arg. A bare `docker build .` fails
 loudly unless you pass `--build-arg PATRONI_VERSION=…`.
 
 ```sh
 docker build \
   --build-arg DISTRO=alpine \
-  --build-arg PG_VERSION=17.6 \
+  --build-arg PG_VERSION=17.10 \
   --build-arg PATRONI_VERSION=4.0.7 \
-  -t patroni-docker:local-alpine-17.6 \
+  -t patroni-docker:local-alpine-17.10 \
   .
 ```
 
 Smoke-test that the binaries start. The image's ENTRYPOINT is
 `/usr/bin/patroni`, which silently ignores unknown args, so to actually run
-`postgres` you must override the entrypoint (CI's `postgres --version` step does
-not, making it a no-op):
+`postgres` you must override the entrypoint (the CI `postgres --version` step
+does this too — see the CI/CD section):
 
 ```sh
-docker run --rm patroni-docker:local-alpine-17.6 patroni --version
-docker run --rm --entrypoint /bin/sh patroni-docker:local-alpine-17.6 -c 'postgres --version'
+docker run --rm patroni-docker:local-alpine-17.10 patroni --version
+docker run --rm --entrypoint /bin/sh patroni-docker:local-alpine-17.10 -c 'postgres --version'
 ```
 
 > Building `linux/arm64` on an amd64 host requires QEMU/binfmt; CI sets that up
@@ -103,6 +108,23 @@ Both paths: run as the `postgres` user, `ENTRYPOINT ["/usr/bin/patroni"]`,
 `CMD ["/etc/patroni/config.yml"]`. Keep the two paths in sync when adding
 Python/Postgres dependencies.
 
+**Security hardening (both paths).** Each install path upgrades base-image
+packages to clear HIGH/CRITICAL CVEs (gated by the Trivy scan in CI): alpine
+runs `apk upgrade --no-cache`; trixie runs `apt-get upgrade -y` but first
+`apt-mark hold`s `postgresql-<major>` / `postgresql-client-<major>`, where
+`<major>` is the `PG_MAJOR` environment variable already set by the official
+`postgres` base image (e.g. `17`). The hold lets the upgrade patch library
+CVEs (openssl, gnutls, …) **without bumping the PostgreSQL point release** away
+from the matrix-pinned version — the image tag must stay honest. Both paths
+also `rm -f /usr/local/bin/gosu`: gosu is a Go binary shipped by the stock
+`postgres` image that carries Go-stdlib CVEs, and it is unused here (our
+entrypoint is patroni running as the non-root `postgres` user; patroni never
+shells out to gosu). Removing it clears those CVEs and shaves ~2 MB.
+
+The pg_version baseline (`17.10`, `18.4`) is chosen so the base image already
+contains the PostgreSQL-server CVE fixes; do not let it fall behind the
+fixed-in version of any open CVE, or the Trivy gate will fail.
+
 ## CI/CD
 
 `.github/workflows/docker.yaml` triggers on push to `main`, tags, PRs to
@@ -110,9 +132,22 @@ Python/Postgres dependencies.
 to override the base tag). Per matrix cell it:
 
 1. builds the image (`docker/build-push-action`, `load:` on PRs, `push:false`),
-2. runs the `patroni --version` / `postgres --version` smoke test **on PRs only**,
-3. pushes to `ghcr.io` (always, except PRs),
-4. pushes to `docker.io` **only if Docker Hub secrets are present**.
+2. runs the `patroni --version` + `postgres --version` smoke test **on PRs only**
+   (the `postgres` check overrides the patroni ENTRYPOINT via `--entrypoint
+   /bin/sh`, otherwise patroni would swallow the arg and it would be a no-op),
+3. scans the loaded image with **Trivy** (`HIGH,CRITICAL`, `exit-code: 1`) **on
+   PRs only** — this is the vulnerability gate before merge,
+4. pushes to `ghcr.io` (always, except PRs) and exposes its digest as
+   `steps.push-ghcr.outputs.digest`,
+5. pushes to `docker.io` **only if Docker Hub secrets are present**,
+6. signs the published GHCR image with **cosign** keyless (OIDC) **on non-PRs**.
+   Cosign runs *last*, so a signing failure does not block publication.
+
+**Known limitation:** the Trivy gate runs on **PRs only**. Images published
+from `main`/tags are not re-scanned at publish time (the publish path doesn't
+load the image into the runner — see landmine #3). So a CVE disclosed *after*
+a PR is approved can still ship to the registries; the gate catches what was
+present at PR time. Only the GHCR image is signed; Docker Hub images are not.
 
 Registries and the secrets that gate them:
 
@@ -123,8 +158,8 @@ Registries and the secrets that gate them:
   skipped silently; this is intentional, not a failure.
 
 The job grants `packages: write` (to push to ghcr) and `id-token: write`
-(intended for future keyless signing via OIDC; currently unused — there is no
-cosign step). The build uses `cache-from/to: type=gha`.
+(used for keyless cosign signing of the published image via GitHub OIDC). The
+build uses `cache-from/to: type=gha`.
 
 ## Examples (reference deployments, not production)
 
@@ -196,6 +231,16 @@ These are real, verified traps in the current tree:
    then pushes with two more `build-push-action` invocations (ghcr, then Docker
    Hub). Don't "optimize" this into a single `push:` step without confirming the
    PR smoke-test path still works, since `load:` is only set on the first step.
+
+4. **Builds are time-sensitive and not byte-reproducible.** Both install paths
+   run an unbounded package upgrade (`apk upgrade` / `apt-get upgrade`) to pull
+   the latest security fixes, so the same Dockerfile + args can produce
+   different images days apart. Consequence: CI on an **unchanged** commit can
+   flip green→red if a new fixable HIGH/CRITICAL CVE appears against a base
+   package, or if a fix lands on the mirrors between the PR scan and the
+   post-merge build. `ignore-unfixed: true` mitigates (unfixed CVEs don't fail
+   the gate) but does not eliminate this. The fix for a red scan is a
+   base-image/package bump, not disabling the gate.
 
 ## Workflow conventions
 
