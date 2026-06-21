@@ -33,7 +33,6 @@ RUN echo "DISTRO is: ${DISTRO}"  && echo "PATRONI_VERSION is: ${PATRONI_VERSION}
       && rm -rf /var/cache/apk/*; \
     else \
       apt update \
-      && PG_MAJOR=$(ls /usr/lib/postgresql) \
       && apt-mark hold postgresql-${PG_MAJOR} postgresql-client-${PG_MAJOR} \
       && apt-get upgrade -y \
       && PATRONI_DEB_VERSION=$(apt-cache madison patroni \
