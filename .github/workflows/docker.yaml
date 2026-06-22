@@ -105,7 +105,7 @@ jobs:
         run: echo "tag=${BASE_TAG}" >> $GITHUB_OUTPUT
       - name: Build Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
         id: build_image
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@v7.2.0
         with:
           context: .
           file: Dockerfile
@@ -145,7 +145,7 @@ jobs:
           ignore-unfixed: true
       - name: Push image to GITHUB registry
         id: push-ghcr
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@v7.2.0
         with:
           context: .
           build-args: |
@@ -159,7 +159,7 @@ jobs:
 
       - name: Push image to Docker Hub
         if: steps.check_secrets.outputs.secrets_available == 'true'
-        uses: docker/build-push-action@v7.0.0
+        uses: docker/build-push-action@v7.2.0
         with:
           context: .
           build-args: |
