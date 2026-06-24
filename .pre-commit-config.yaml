@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-yaml
       - id: end-of-file-fixer
@@ -12,14 +12,14 @@ repos:
       - id: detect-private-key
 
   - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-    rev: v2.14.0
+    rev: v2.16.0
     hooks:
       - id: pretty-format-yaml
         args: [--autofix, --indent, '2', --offset, '2']
         exclude: ./(examples/ansible/roles)/
 
   - repo: https://github.com/ansible-community/ansible-lint.git
-    rev: v25.5.0
+    rev: v26.4.0
     hooks:
       - id: ansible-lint
         files: ./(ansible)/
