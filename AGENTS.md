@@ -22,7 +22,6 @@ The repository produces artifacts in two layers:
 ```
 Dockerfile                      # Single Dockerfile; builds both alpine and trixie variants
 .github/workflows/docker.yaml   # CI: matrix build + push to ghcr.io and docker.io
-.github/workflows/autopr.yaml   # Auto-opens a PR when pushing to any non-main branch
 .pre-commit-config.yaml         # yaml formatting, whitespace, private-key detection, ansible-lint
 .ansible-lint                   # ansible-lint config
 examples/ansible/               # 3-node Ansible deployment (roles: docker_install, etcd, patroni)
@@ -245,8 +244,7 @@ These are real, verified traps in the current tree:
 ## Workflow conventions
 
 - Branch from `main`, open PRs against `main`.
-- Pushing to **any non-main branch** auto-opens a PR via `autopr.yaml`
-  (`diillson/auto-pull-request`). You do not need to open it manually.
+- Open PRs manually with `gh pr create` (there is no auto-PR workflow).
 - GitHub Actions versions are kept current by Dependabot. When several
   Dependabot PRs touch `docker.yaml` at once, expect them to conflict with each
   other — squash them into one change rather than merging piecemeal.
