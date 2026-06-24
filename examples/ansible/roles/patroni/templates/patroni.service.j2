@@ -14,9 +14,8 @@ ExecStart=/usr/bin/docker run \
     --publish 5432:5432 \
     --publish 8008:8008 \
     --publish 8091:8091 \
-    --add-host "patroni-postgresql-01:10.0.70.55" \
-    --add-host "patroni-postgresql-02:10.0.70.56" \
-    --add-host "patroni-postgresql-03:10.0.70.57" \
+{% for h in groups['patroni_postgresql_cluster'] %}    --add-host "{{ hostvars[h].inventory_hostname }}:{{ hostvars[h].patroni_node_address | default(hostvars[h].ansible_host) }}" \
+{% endfor %}
     --volume={{ patroni_config_dir }}/config.yml:{{ patroni_config_dir }}/config.yml:ro \
     --volume={{ pg_data_dir }}:{{ pg_data_dir }} \
     ghcr.io/batonogov/patroni-docker:{{ image_version }}
