@@ -26,6 +26,7 @@ Dockerfile                      # Single Dockerfile; builds both alpine and trix
 .pre-commit-config.yaml         # yaml formatting, whitespace, private-key detection, ansible-lint
 .ansible-lint                   # ansible-lint config
 examples/ansible/               # 3-node Ansible deployment (roles: docker_install, etcd, patroni)
+examples/ansible/tests/lima/    # integration harness: 3 native arm64 Ubuntu VMs via Lima (vz)
 examples/docker/                # docker-compose: etcd x3 + patroni x3 + haproxy
 ```
 
@@ -184,6 +185,16 @@ Both examples are explicitly labeled **"Do not use for production."**
   ```
   Task names in the playbook are in Russian; do not "translate" them as part of
   an unrelated change.
+
+  The `docker_install` role adds the Docker CE apt repository via
+  `ansible.builtin.deb822_repository` (not the removed-from-26.04 `apt_key`/
+  `apt_repository` modules), so it deploys on Ubuntu 20.04 through 26.04
+  (`noble`–`resolute`).
+
+  The roles can be tested end-to-end on a Mac via the Lima harness at
+  `examples/ansible/tests/lima/` — see its `README.md`. It boots three native
+  arm64 Ubuntu 26.04 VMs (`vmType: vz`), runs this playbook against them, and
+  asserts etcd + Patroni form a healthy 3-node cluster.
 
 ## Linting and formatting
 
