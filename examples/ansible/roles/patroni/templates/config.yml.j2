@@ -37,7 +37,7 @@ bootstrap:
   - data-checksums
 
   pg_hba:  # Add following lines to pg_hba.conf after running 'initdb'
-  - host replication replicator 127.0.0.1/32 trust
+  - host replication replicator 0.0.0.0/0 md5
   - host all all 0.0.0.0/0 md5
 
   # Additional script to be launched after initial cluster creation (will be passed the connection URL as parameter)

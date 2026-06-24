@@ -1,0 +1,64 @@
+# Lima base config for a single Patroni cluster node.
+#
+# Boot three copies of this template with distinct instance names:
+#   limactl start --name=patroni-postgresql-01 examples/ansible/tests/lima/lima-node.yaml
+#   limactl start --name=patroni-postgresql-02 examples/ansible/tests/lima/lima-node.yaml
+#   limactl start --name=patroni-postgresql-03 examples/ansible/tests/lima/lima-node.yaml
+#
+# The instance name is supplied via --name (NOT hardcoded here) so that each
+# node gets a unique hostname and a stable DHCP lease on the user-v2 network.
+# The SSH local port is auto-assigned by Lima and discovered at runtime by
+# scripts/up.sh.
+
+vmType: vz
+
+arch: aarch64
+
+# Run native arm64 binaries. No Rosetta translation — the Patroni/Postgres
+# container image is arm64 and should not be emulated.
+rosetta:
+  enabled: false
+
+images:
+- location: 'https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img'
+  arch: aarch64
+
+cpus: 2
+
+memory: '2GiB'
+
+disk: '15GiB'
+
+# Do not bind-mount any host directories. The ansible roles write everything
+# inside the guest (configs, data dirs). Keeping mounts empty maximises fidelity
+# with a real production host and avoids permission surprises.
+mounts: []
+
+# Disable Lima's built-in containerd. Docker CE is installed inside the guest
+# by the docker_install ansible role, exactly as on a production host.
+containerd:
+  system: false
+  user: false
+
+# Do not scatter the host user's ~/.ssh/*.pub keys into the guest. Lima's own
+# instance key (~/.lima/_config/user) is always installed and is the only key
+# the ansible inventory relies on.
+ssh:
+  loadDotSSHPubKeys: false
+
+# Attach to the shared user-v2 network so the three nodes can reach each other.
+# Each VM resolves its peers as lima-<NAME>.internal and gets a stable DHCP IP
+# in 192.168.104.0/24 (configured in ~/.lima/_config/networks.yaml).
+networks:
+- lima: user-v2
+
+# Pre-install the minimal packages ansible needs on the first connection:
+# python3-apt for the apt module, ca-certificates + curl for the Docker repo.
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y python3-apt ca-certificates curl

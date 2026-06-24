@@ -7,7 +7,7 @@ After=docker.service
 User={{ patroni_user }}
 Restart=always
 Environment="TOKEN={{ lookup('password', 'secrets/patroni-postgresql/etcd_cluster_token length=64') }}"
-Environment="CLUSTER=patroni-postgresql-01=http://10.0.70.55:2380,patroni-postgresql-02=http://10.0.70.56:2380,patroni-postgresql-03=http://10.0.70.57:2380"
+Environment="CLUSTER={% for h in groups['patroni_postgresql_cluster'] %}{{ hostvars[h].inventory_hostname }}=http://{{ hostvars[h].patroni_node_address | default(hostvars[h].ansible_host) }}:2380{% if not loop.last %},{% endif %}{% endfor %}"
 ExecStartPre=-/usr/bin/docker rm -f etcd
 ExecStart=/usr/bin/docker run \
     --rm \
@@ -20,9 +20,9 @@ ExecStart=/usr/bin/docker run \
     /usr/local/bin/etcd \
     --data-dir=/etcd-data \
     --name {{ inventory_hostname }} \
-    --initial-advertise-peer-urls http://{{ ansible_host }}:2380 \
+    --initial-advertise-peer-urls http://{{ patroni_node_address | default(ansible_host) }}:2380 \
     --listen-peer-urls http://0.0.0.0:2380 \
-    --advertise-client-urls http://{{ ansible_host }}:2379 \
+    --advertise-client-urls http://{{ patroni_node_address | default(ansible_host) }}:2379 \
     --listen-client-urls http://0.0.0.0:2379 \
     --initial-cluster ${CLUSTER} \
     --initial-cluster-state new \

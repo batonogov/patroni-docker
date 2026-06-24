@@ -3,3 +3,5 @@ secrets
 patroni-data*
 .ansible
 .fake
+.pi
+examples/ansible/tests/lima/inventory.lima.yaml

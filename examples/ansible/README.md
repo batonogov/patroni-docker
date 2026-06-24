@@ -50,3 +50,21 @@ psql -h 10.0.70.55 -p 5432 -U postgres
 Password for user postgres:
 psql (17.2, server 17.1 (Debian 17.1-1.pgdg120+1))
 ```
+
+## Testing the roles locally
+
+The roles can be exercised end-to-end on a Mac (Apple Silicon) **without any
+real servers** via the Lima integration harness in [`tests/lima/`](tests/lima).
+It boots three **native arm64** Ubuntu 26.04 VMs (Apple
+Virtualization.framework, `systemd` as PID 1, `docker-ce` installed via `apt`)
+and runs this exact playbook against them, then asserts etcd + Patroni form a
+healthy 3-node cluster.
+
+```sh
+tests/lima/scripts/up.sh                                     # boot 3 VMs + generate inventory
+ansible-playbook -i tests/lima/inventory.lima.yaml patroni_postgresql_cluster.yaml
+tests/lima/scripts/verify.sh                                 # assert cluster health
+tests/lima/scripts/down.sh                                   # tear down
+```
+
+See [`tests/lima/README.md`](tests/lima/README.md) for details.
