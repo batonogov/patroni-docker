@@ -3,3 +3,4 @@ secrets
 patroni-data*
 .ansible
 .fake
+.pi
