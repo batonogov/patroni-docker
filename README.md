@@ -16,16 +16,16 @@ The canonical matrix lives in [`.github/release-matrix.json`](.github/release-ma
 - Debian `trixie` and Alpine
 - `linux/amd64` and `linux/arm64`
 
-A release tag identifies the repository's delivery version; the complete software tuple stays visible in every image tag:
+A release tag identifies this repository's delivery version. The complete software tuple remains visible in each image tag:
 
 ```text
 v<release>-<postgres>-<patroni>-<distro>
 # v5.0.0-17.10-4.0.7-trixie
 ```
 
-`main-*` tags are mutable preview channels. Stable `v*` tags are published only from a SemVer Git tag after every image has passed smoke tests and vulnerability scans. There is deliberately no ambiguous `latest` tag.
+`main-*` tags are mutable preview channels. Stable tags are published only from a monotonic project-SemVer Git tag at `v5.0.0` or newer, after every exact candidate digest passes smoke tests and vulnerability scans.
 
-Legacy release tags remain available and are not rewritten by the new flow.
+The new workflow never publishes an ambiguous `latest`. A historical GHCR `latest` alias may still be visible for compatibility; it is frozen, deprecated, and must not be used as a release channel. Legacy release tags also remain available and are never repointed.
 
 ## Pull an image
 
@@ -37,7 +37,7 @@ docker pull ghcr.io/batonogov/patroni-docker:v5.0.0-17.10-4.0.7-trixie
 docker pull docker.io/batonogov/patroni-docker:v5.0.0-17.10-4.0.7-trixie
 ```
 
-The next release page contains the exact tags and immutable digests for the full matrix. Until that release is created, use a `main-*` tag only for evaluation.
+Each release page contains the complete matrix, immutable registry-specific index digests, and an attached `release-manifest.json` with source SHA, per-platform digests, and verification receipts. Until the first v5 release exists, use `main-*` only for evaluation.
 
 The image entrypoint is Patroni:
 
@@ -48,7 +48,7 @@ docker run --rm --entrypoint /bin/sh IMAGE -c 'postgres --version'
 
 ## Verify a release
 
-Release images are keylessly signed with Sigstore. GHCR images also carry GitHub build provenance; BuildKit publishes SBOM and provenance attestations with the OCI image.
+Release images are keylessly signed with Sigstore in both registries. GHCR images also carry GitHub build provenance; BuildKit publishes OCI SBOM and provenance attestations.
 
 Use the complete digest and identity shown on the release page:
 
@@ -75,4 +75,4 @@ The [Docker Compose example](examples/docker/) starts a local three-node etcd an
 
 ## Release process
 
-See [`docs/releases.md`](docs/releases.md) for the version contract, trust boundaries, failure behavior, and maintainer runbook.
+See [`docs/releases.md`](docs/releases.md) for the version contract, digest-closed state machine, failure behavior, and maintainer runbook.

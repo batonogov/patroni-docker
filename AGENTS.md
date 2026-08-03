@@ -54,13 +54,15 @@ The image tag is built deterministically as:
 ```
 ${BASE_TAG}-${pg_version}-${patroni_version}-${distro}   # lowercased
 # example on a push to main:  main-17.10-4.0.7-trixie
-# example for a tag v1.2.3 :  v1.2.3-17.10-4.0.7-alpine
+# example for a tag v5.0.0 :  v5.0.0-17.10-4.0.7-alpine
 ```
 
-`BASE_TAG` is `main` for the mutable preview channel or an accepted project
-SemVer Git tag for a stable release. `workflow_dispatch` validates but never
-publishes, so manual input cannot mint a release-looking image tag. The full
-image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
+`BASE_TAG` is `main` for the mutable preview channel or a monotonic v5+
+project-SemVer Git tag for a stable release. `workflow_dispatch` validates but
+never receives publishing credentials, so manual runs cannot mint a
+release-looking image tag. The new workflow never updates the frozen legacy
+GHCR `latest` alias. Full image refs are
+`ghcr.io/batonogov/patroni-docker:<tag>` and
 `docker.io/batonogov/patroni-docker:<tag>`.
 
 ## Building locally
@@ -139,22 +141,27 @@ fixed-in version of any open CVE, or the Trivy gate will fail.
 `.github/workflows/docker.yaml` triggers on push to `main`, accepted SemVer
 tags, PRs to `main`, and manual `workflow_dispatch`. The phases are deliberate:
 
-1. `prepare` validates the JSON matrix, release tag and source authority.
+1. `prepare` validates matrix bounds, the exact two-platform contract, the v5+
+   monotonic release tag, OCI tag lengths, and source authority.
 2. `validate` builds every architecture separately, runs both binary smoke
    tests and gates HIGH/CRITICAL vulnerabilities with Trivy. It cannot publish.
 3. `publish_candidates` builds one OCI multi-platform index per PG/distro cell
    and pushes a run-scoped candidate to both registries in one Buildx build.
-4. The exact published GHCR digest is scanned for both architectures. BuildKit
-   emits SBOM/provenance, GitHub attests GHCR provenance, and cosign signs both
-   registry-specific digests before promotion can start.
-5. `promote` creates the compatible `main-*` tags or immutable stable `v*` tags,
-   verifies that each final index contains amd64 and arm64, and records digests.
-6. `github_release` creates generated release notes only after every image was
-   promoted successfully.
+4. Both registry indexes are closed to exact digests. Their runnable platform
+   sets and child digests must match. The exact GHCR platforms are smoke-tested
+   and scanned; BuildKit emits SBOM/provenance, GitHub attests GHCR provenance,
+   and cosign signs both registry-specific index digests.
+5. Short-lived workflow artifacts carry the closed digests and receipts to
+   `promote`. It consumes `repository@sha256:...`, never a mutable candidate
+   tag. Stable writes are idempotent: absent → create, same digest → no-op,
+   different digest → hard fail.
+6. Final refs are re-inspected; signatures and GHCR provenance are verified.
+   `github_release` then publishes human notes and `release-manifest.json`.
 
-PRs receive read-only permissions. Publishing jobs receive registry/OIDC
-permissions per job. Stable releases fail loudly if Docker Hub credentials are
-missing; silently publishing only half of the advertised release is forbidden.
+PRs and manual dispatches receive read-only permissions and no registry
+credentials. Publishing jobs receive registry/OIDC permissions per job. Stable
+releases fail loudly if Docker Hub credentials are missing; silently publishing
+only half of the advertised release is forbidden.
 
 Registries and the secrets that gate them:
 
@@ -166,7 +173,10 @@ Registries and the secrets that gate them:
 
 The publish job grants `packages: write`, `attestations: write`,
 `artifact-metadata: write`, and `id-token: write`; promotion and release use
-separate narrower permissions. Builds use scoped GHA caches.
+separate narrower permissions. Build-layer caches use disjoint `validate-*` and
+`publish-*` scopes. Shared setup caches for Buildx, binfmt and Trivy are disabled
+so an untrusted PR cannot seed release tooling; those tools and the BuildKit/
+binfmt images are version- or digest-pinned.
 
 ## Examples (reference deployments, not production)
 
@@ -236,9 +246,11 @@ These are real, verified traps in the current tree:
    pushes one OCI index.
 
 3. **Candidate and final tags have different authority.** Run-scoped candidate
-   tags may be retried and cleaned by registry retention. Stable `v*` tags are
-   guarded in GitHub, GHCR and Docker Hub and must never be overwritten. A
-   GitHub Release is created only after promotion.
+   tags may be retried and cleaned by registry retention, but `promote` must
+   never resolve them again. The closed index/per-platform digests travel via
+   workflow artifacts, and final refs are created from `repository@digest`.
+   For stable refs, an existing equal digest is a resumable no-op and a
+   different digest is a blocker.
 
 4. **Builds are time-sensitive and not byte-reproducible.** Both install paths
    run an unbounded package upgrade (`apk upgrade` / `apt-get upgrade`) to pull
@@ -252,8 +264,10 @@ These are real, verified traps in the current tree:
 
 5. **Two registries cannot be promoted transactionally.** All candidates are
    tested, scanned, attested and signed before promotion starts, but an external
-   registry outage can still interrupt promotion midway. Fail closed: do not
-   overwrite that release version. Follow `docs/releases.md` recovery guidance.
+   registry outage can still interrupt promotion midway. Re-run the failed
+   promotion job so closed digests are reused; matching final refs are no-ops.
+   Never re-run all build jobs after partial stable promotion, and never replace
+   a final ref that points to another digest.
 
 ## Workflow conventions
 
@@ -261,9 +275,10 @@ These are real, verified traps in the current tree:
 - Open PRs manually with `gh pr create` (there is no auto-PR workflow).
 - Keep `.github/release-matrix.json` as the only matrix source and run
   `python3 -m unittest tests/test_release.py` after changing release behavior.
-- Stable release tags are project SemVer, independent from bundled Patroni and
-  PostgreSQL versions. Follow `docs/releases.md`; never create the GitHub
-  Release manually before the workflow finishes.
+- Stable release tags are monotonic project SemVer starting at `v5.0.0`,
+  independent from bundled Patroni and PostgreSQL versions. Follow
+  `docs/releases.md`; never create the GitHub Release manually before the
+  workflow finishes.
 - GitHub Actions versions are kept current by Dependabot. When several
   Dependabot PRs touch `docker.yaml` at once, expect them to conflict with each
   other — squash them into one change rather than merging piecemeal.
@@ -276,4 +291,6 @@ These are real, verified traps in the current tree:
   build the image. If an example references an image tag (e.g. in
   `docker-compose.yaml`), it points at an already-published tag and may lag the
   current matrix — that is expected.
-- There is no test suite beyond the CI smoke tests and pre-commit.
+- Release-helper unit tests and the CI build/smoke/scan matrix are the product
+  test suite; the demonstration deployments do not have a separate automated
+  integration suite.

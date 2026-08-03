@@ -8,10 +8,10 @@ Stable Git tags use project SemVer:
 
 ```text
 vMAJOR.MINOR.PATCH
-vMAJOR.MINOR.PATCH-rc.N
+vMAJOR.MINOR.PATCH-{alpha,beta,rc}.N
 ```
 
-The project version describes this repository's packaging and delivery contract. Patroni and PostgreSQL keep their own versions and remain explicit in each image tag:
+The v5 epoch describes this repository's packaging and delivery contract. Patroni and PostgreSQL keep their own versions and remain explicit in each image tag:
 
 ```text
 <project-release>-<postgres>-<patroni>-<distro>
@@ -26,40 +26,51 @@ v5.0.0-18.4-4.0.7-trixie
 v5.0.0-18.4-4.0.7-alpine
 ```
 
-Each tag is an OCI index containing `linux/amd64` and `linux/arm64`. The release page records registry-specific immutable digests. No `latest` tag is published because there is no single unambiguous PostgreSQL/distro default.
+The validator requires `v5.0.0` or newer, rejects versions that do not move forward from existing v5 tags, and rejects any final image tag longer than the OCI/Docker 128-character limit.
 
-Existing legacy tags such as `v4.0.5-pg17.5` are retained. They are historical artifacts and are not accepted by the new release-tag validator. The first release using the new multi-image contract should be `v5.0.0` because the artifact and release model changed materially.
+Each stable tag is an OCI index containing exactly `linux/amd64` and `linux/arm64`. The release page records registry-specific index digests and attaches `release-manifest.json` with source commit, per-platform manifest digests, and verification receipts.
 
-## Trust boundaries
+The workflow never creates or repoints `latest`. A historical GHCR `latest` alias may remain visible; it is frozen and deprecated. Existing release tags such as `v4.0.5-pg17.5` are also retained as historical artifacts and are not accepted by the v5 validator.
 
-The workflow has four distinct phases:
+## Digest-closed state machine
+
+The workflow has five trust phases:
 
 1. **Validate** — every platform, PostgreSQL version, and distro is built, smoke-tested, and scanned. Pull requests cannot publish.
-2. **Publish candidates** — only a push to `main` or an accepted release tag can authenticate to registries. One build publishes a multi-platform candidate to both registries with BuildKit SBOM/provenance.
-3. **Verify and promote** — exact candidate digests are scanned for both architectures, GHCR provenance is attested, and both registry digests are keylessly signed. Final tags are created only after all candidate jobs pass.
-4. **Create the GitHub Release** — a release is created only after every final OCI index contains both supported architectures. Its generated notes include the complete matrix, registry digests, pull commands, and verification commands.
+2. **Publish candidates** — only a push to `main` or an accepted release tag can authenticate to registries. One Buildx invocation publishes the same multi-platform candidate build to both registries.
+3. **Close evidence** — the workflow resolves both registry indexes to digests, requires their exact runnable platform sets and child digests to match, smoke-tests and scans every exact GHCR platform digest, attaches SBOM/provenance, attests GHCR, and signs both registry-specific index digests.
+4. **Promote by digest** — candidate evidence is handed to the promotion job through short-lived workflow artifacts. Promotion consumes `repository@sha256:...`, never a mutable candidate tag. It accepts an existing stable tag only when it already equals the expected digest, which makes a partial promotion safely resumable.
+5. **Release last** — final refs are re-inspected, signatures and GHCR provenance are verified against final digests, the complete machine manifest is preserved, and only then is the GitHub Release created.
 
-Permissions are granted per job. Pull-request jobs have read-only repository access and never receive registry publishing authority.
+Permissions are granted per job. Pull-request and manual-dispatch jobs have read-only repository access and never receive registry credentials. Actions, Buildx, BuildKit, binfmt, Trivy, and cosign versions are pinned; shared setup caches are disabled so an untrusted PR cannot seed release tooling.
 
 ## Tag authority and immutability
 
-A stable release can only originate from a Git tag that:
+A stable release can originate only from a Git tag that:
 
-- matches `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-{alpha,beta,rc}.N`;
+- matches the v5+ project-SemVer grammar;
+- is newer than every existing v5 project release tag;
+- keeps every generated OCI tag within 128 characters;
 - points to a commit reachable from `main`;
-- does not already have a GitHub Release or a final image tag in either registry.
+- does not already have a GitHub Release.
 
-The workflow refuses to overwrite an existing stable tag. A rerun can therefore never silently rebuild `v5.0.0` against newer package mirrors and change its contents.
+Immediately before each stable final write, promotion applies this rule:
 
-The registry promotion step starts only after all candidates are tested, scanned, attested, and signed. Promotion spans two external registries and cannot be globally transactional. If infrastructure fails midway through promotion, do not overwrite the version: inspect the partial tags, remove them deliberately if safe, or publish a new patch release.
+- final ref absent → create it from the closed digest;
+- final ref already equals the closed digest → no-op and resume;
+- final ref points elsewhere → hard fail; never overwrite it.
 
-Repository administrators should also protect `v*` Git tags with a GitHub ruleset and enable immutable GitHub Releases. These are repository settings and cannot be enforced by a pull request.
+OCI registries do not provide one transaction spanning GHCR and Docker Hub. The workflow therefore starts promotion only after all candidates pass and makes each write idempotent. Repository administrators should additionally protect `v*` Git tags with a GitHub ruleset, enable immutable GitHub Releases, and enable registry tag immutability where available. These are repository settings and cannot be enforced by a pull request.
+
+## Rebuild reproducibility
+
+A published release is immutable by digest and is built once before promotion to both registries. A later rebuild of the same source is **not** expected to be byte-identical: both Dockerfile paths intentionally consume current security updates from package mirrors. SBOM and provenance describe the exact release that was built; a security rebuild receives a new project version.
 
 ## Mutable preview channel
 
-A push to `main` updates the compatible `main-<postgres>-<patroni>-<distro>` tags. These are signed preview images, not releases, and may change on every successful `main` build.
+A push to `main` updates the compatible `main-<postgres>-<patroni>-<distro>` tags. They are signed preview images, not releases, and may change on every successful `main` build.
 
-`workflow_dispatch` validates the selected ref but intentionally does not publish. Arbitrary manual inputs cannot mint release-looking tags.
+`workflow_dispatch` validates the selected ref but intentionally cannot access publishing credentials or publish images. Arbitrary manual runs cannot mint release-looking tags.
 
 ## Maintainer runbook
 
@@ -75,13 +86,15 @@ A push to `main` updates the compatible `main-<postgres>-<patroni>-<distro>` tag
    git push origin v5.0.0
    ```
 
-5. Watch **Build, verify, and release container images**. Do not create a GitHub Release manually; the workflow creates it after successful promotion.
-6. Verify at least one image using both the `cosign` and `gh attestation` commands generated on the release page.
+5. Watch **Build, verify, and release container images**. Do not create a GitHub Release manually; the workflow creates it after successful digest promotion.
+6. Download `release-manifest.json` and verify at least one image with both generated `cosign` and `gh attestation` commands.
 
-## Failure behavior
+## Failure and recovery
 
-- A PR failure publishes nothing.
+- A PR or manual validation failure publishes nothing.
 - A `main` failure leaves the previous `main-*` tags intact; run-scoped candidate tags may remain for registry retention cleanup.
-- A release candidate failure creates neither final stable tags nor a GitHub Release.
-- A promotion failure creates no GitHub Release and requires explicit recovery; the workflow does not overwrite any stable tag.
+- A candidate build, smoke, scan, attestation, or signature failure creates no final stable tag and no GitHub Release. Use **Re-run failed jobs** after fixing transient infrastructure.
+- If promotion stops midway, use **Re-run failed jobs**, not **Re-run all jobs**. The same closed digest artifacts are reused; matching final tags are no-ops and missing tags are completed.
+- If a final tag exists with another digest, stop. Investigate or issue a new patch version; the workflow will not overwrite it.
+- If only GitHub Release creation fails, re-run that failed job; already verified images remain unchanged.
 - Missing Docker Hub credentials fail publication loudly rather than creating a partial two-registry release.
