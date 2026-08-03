@@ -21,7 +21,12 @@ The repository produces artifacts in two layers:
 
 ```
 Dockerfile                      # Single Dockerfile; builds both alpine and trixie variants
-.github/workflows/docker.yaml   # CI: matrix build + push to ghcr.io and docker.io
+.github/release-matrix.json     # Source of truth: Patroni, PG, distro and platform matrix
+.github/release.yml             # Categories for GitHub-generated release notes
+.github/workflows/docker.yaml   # Validate, publish candidates, promote, then release
+scripts/release.py              # Matrix/tag validation and release-note renderer
+tests/test_release.py           # Stdlib unit tests for the release helper
+docs/releases.md                # Public version contract and maintainer runbook
 .pre-commit-config.yaml         # yaml formatting, whitespace, private-key detection, ansible-lint
 .ansible-lint                   # ansible-lint config
 examples/ansible/               # 3-node Ansible deployment (roles: docker_install, etcd, patroni)
@@ -30,27 +35,34 @@ examples/docker/                # docker-compose: etcd x3 + patroni x3 + haproxy
 
 ## The build matrix (the central concept)
 
-Every build is a Cartesian product defined in `.github/workflows/docker.yaml`.
+`.github/release-matrix.json` is the only source of truth for the published
+surface. `scripts/release.py` validates it and emits two matrices: a per-platform
+validation matrix and a per-image multi-platform publication matrix. Never copy
+matrix values back into the workflow.
+
 When you change any of these, you change the whole published surface:
 
 | Dimension        | Values                  |
 |------------------|-------------------------|
-| `platform`       | `linux/amd64`, `linux/arm64` |
-| `distro`         | `trixie`, `alpine`      |
-| `pg_version`     | `17.10`, `18.4`         |
-| `patroni_version`| `4.0.7`                 |
+| `platforms`       | `linux/amd64`, `linux/arm64` |
+| `distros`         | `trixie`, `alpine`      |
+| `postgres_versions` | `17.10`, `18.4`      |
+| `patroni_version` | `4.0.7`                 |
 
 The image tag is built deterministically as:
 
 ```
 ${BASE_TAG}-${pg_version}-${patroni_version}-${distro}   # lowercased
 # example on a push to main:  main-17.10-4.0.7-trixie
-# example for a tag v1.2.3 :  v1.2.3-17.10-4.0.7-alpine
+# example for a tag v5.0.0 :  v5.0.0-17.10-4.0.7-alpine
 ```
 
-`BASE_TAG` comes from `docker/metadata-action` (branch name, git tag, or PR
-ref), or from the manual `workflow_dispatch` `inputs.tag` when set. The full
-image ref is `ghcr.io/batonogov/patroni-docker:<tag>` and
+`BASE_TAG` is `main` for the mutable preview channel or a monotonic v5+
+project-SemVer Git tag for a stable release. `workflow_dispatch` validates but
+never receives publishing credentials, so manual runs cannot mint a
+release-looking image tag. The new workflow never updates the frozen legacy
+GHCR `latest` alias. Full image refs are
+`ghcr.io/batonogov/patroni-docker:<tag>` and
 `docker.io/batonogov/patroni-docker:<tag>`.
 
 ## Building locally
@@ -126,39 +138,45 @@ fixed-in version of any open CVE, or the Trivy gate will fail.
 
 ## CI/CD
 
-`.github/workflows/docker.yaml` triggers on push to `main`, tags, PRs to
-`main`, and manual `workflow_dispatch` (which accepts an optional `inputs.tag`
-to override the base tag). Per matrix cell it:
+`.github/workflows/docker.yaml` triggers on push to `main`, accepted SemVer
+tags, PRs to `main`, and manual `workflow_dispatch`. The phases are deliberate:
 
-1. builds the image (`docker/build-push-action`, `load:` on PRs, `push:false`),
-2. runs the `patroni --version` + `postgres --version` smoke test **on PRs only**
-   (the `postgres` check overrides the patroni ENTRYPOINT via `--entrypoint
-   /bin/sh`, otherwise patroni would swallow the arg and it would be a no-op),
-3. scans the loaded image with **Trivy** (`HIGH,CRITICAL`, `exit-code: 1`) **on
-   PRs only** — this is the vulnerability gate before merge,
-4. pushes to `ghcr.io` (always, except PRs) and exposes its digest as
-   `steps.push-ghcr.outputs.digest`,
-5. pushes to `docker.io` **only if Docker Hub secrets are present**,
-6. signs the published GHCR image with **cosign** keyless (OIDC) **on non-PRs**.
-   Cosign runs *last*, so a signing failure does not block publication.
+1. `prepare` validates matrix bounds, the exact two-platform contract, the v5+
+   monotonic release tag, OCI tag lengths, and source authority.
+2. `validate` builds every architecture separately, runs both binary smoke
+   tests and gates HIGH/CRITICAL vulnerabilities with Trivy. It cannot publish.
+3. `publish_candidates` builds one OCI multi-platform index per PG/distro cell
+   and pushes a run-scoped candidate to both registries in one Buildx build.
+4. Both registry indexes are closed to exact digests. Their runnable platform
+   sets and child digests must match. The exact GHCR platforms are smoke-tested
+   and scanned; BuildKit emits SBOM/provenance, GitHub attests GHCR provenance,
+   and cosign signs both registry-specific index digests.
+5. Short-lived workflow artifacts carry the closed digests and receipts to
+   `promote`. It consumes `repository@sha256:...`, never a mutable candidate
+   tag. Stable writes are idempotent: absent → create, same digest → no-op,
+   different digest → hard fail.
+6. Final refs are re-inspected; signatures and GHCR provenance are verified.
+   `github_release` then publishes human notes and `release-manifest.json`.
 
-**Known limitation:** the Trivy gate runs on **PRs only**. Images published
-from `main`/tags are not re-scanned at publish time (the publish path doesn't
-load the image into the runner — see landmine #3). So a CVE disclosed *after*
-a PR is approved can still ship to the registries; the gate catches what was
-present at PR time. Only the GHCR image is signed; Docker Hub images are not.
+PRs and manual dispatches receive read-only permissions and no registry
+credentials. Publishing jobs receive registry/OIDC permissions per job. Stable
+releases fail loudly if Docker Hub credentials are missing; silently publishing
+only half of the advertised release is forbidden.
 
 Registries and the secrets that gate them:
 
 - **ghcr.io** — authenticated with the automatic `GITHUB_TOKEN`. Always publishes
   on main/tag.
-- **docker.io** — gated by repository secrets `DOCKERHUB_REGISTRY_USERNAME` and
-  `DOCKERHUB_REGISTRY_PASSWORD`. If they are absent the Docker Hub push step is
-  skipped silently; this is intentional, not a failure.
+- **docker.io** — authenticated with repository secrets
+  `DOCKERHUB_REGISTRY_USERNAME` and `DOCKERHUB_REGISTRY_PASSWORD`. Missing
+  credentials fail publication before a final tag is created.
 
-The job grants `packages: write` (to push to ghcr) and `id-token: write`
-(used for keyless cosign signing of the published image via GitHub OIDC). The
-build uses `cache-from/to: type=gha`.
+The publish job grants `packages: write`, `attestations: write`,
+`artifact-metadata: write`, and `id-token: write`; promotion and release use
+separate narrower permissions. Build-layer caches use disjoint `validate-*` and
+`publish-*` scopes. Shared setup caches for Buildx, binfmt and Trivy are disabled
+so an untrusted PR cannot seed release tooling; those tools and the BuildKit/
+binfmt images are version- or digest-pinned.
 
 ## Examples (reference deployments, not production)
 
@@ -221,15 +239,18 @@ These are real, verified traps in the current tree:
    are **not** buildable for trixie. So the buildable-for-both set is currently
    `4.0.7, 4.1.0, 4.1.2, 4.1.3`.
 
-2. **The QEMU `if:` condition is buggy.** In `docker.yaml`:
-   `if: ${{ matrix.platform }} == 'linux/arm64'` is always truthy, so QEMU is
-   installed even on amd64 jobs. Correct form is
-   `if: matrix.platform == 'linux/arm64'` (no `${{ }}` around the comparison).
+2. **Never publish architectures from parallel jobs to the same final tag.**
+   That race previously left fresh tags with amd64 only. Validation remains
+   per-platform because a multi-platform image cannot be loaded into the
+   default runner image store; publication builds both platforms together and
+   pushes one OCI index.
 
-3. **Separate build and push steps.** The workflow builds once (`push:false`),
-   then pushes with two more `build-push-action` invocations (ghcr, then Docker
-   Hub). Don't "optimize" this into a single `push:` step without confirming the
-   PR smoke-test path still works, since `load:` is only set on the first step.
+3. **Candidate and final tags have different authority.** Run-scoped candidate
+   tags may be retried and cleaned by registry retention, but `promote` must
+   never resolve them again. The closed index/per-platform digests travel via
+   workflow artifacts, and final refs are created from `repository@digest`.
+   For stable refs, an existing equal digest is a resumable no-op and a
+   different digest is a blocker.
 
 4. **Builds are time-sensitive and not byte-reproducible.** Both install paths
    run an unbounded package upgrade (`apk upgrade` / `apt-get upgrade`) to pull
@@ -241,10 +262,23 @@ These are real, verified traps in the current tree:
    the gate) but does not eliminate this. The fix for a red scan is a
    base-image/package bump, not disabling the gate.
 
+5. **Two registries cannot be promoted transactionally.** All candidates are
+   tested, scanned, attested and signed before promotion starts, but an external
+   registry outage can still interrupt promotion midway. Re-run the failed
+   promotion job so closed digests are reused; matching final refs are no-ops.
+   Never re-run all build jobs after partial stable promotion, and never replace
+   a final ref that points to another digest.
+
 ## Workflow conventions
 
 - Branch from `main`, open PRs against `main`.
 - Open PRs manually with `gh pr create` (there is no auto-PR workflow).
+- Keep `.github/release-matrix.json` as the only matrix source and run
+  `python3 -m unittest tests/test_release.py` after changing release behavior.
+- Stable release tags are monotonic project SemVer starting at `v5.0.0`,
+  independent from bundled Patroni and PostgreSQL versions. Follow
+  `docs/releases.md`; never create the GitHub Release manually before the
+  workflow finishes.
 - GitHub Actions versions are kept current by Dependabot. When several
   Dependabot PRs touch `docker.yaml` at once, expect them to conflict with each
   other — squash them into one change rather than merging piecemeal.
@@ -257,4 +291,6 @@ These are real, verified traps in the current tree:
   build the image. If an example references an image tag (e.g. in
   `docker-compose.yaml`), it points at an already-published tag and may lag the
   current matrix — that is expected.
-- There is no test suite beyond the CI smoke tests and pre-commit.
+- Release-helper unit tests and the CI build/smoke/scan matrix are the product
+  test suite; the demonstration deployments do not have a separate automated
+  integration suite.
