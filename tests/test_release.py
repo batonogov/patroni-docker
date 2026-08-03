@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -182,6 +186,37 @@ class ReleaseManifestTests(unittest.TestCase):
         del invalid_platforms[0]["docker_platform_digests"]["linux/arm64"]
         with self.assertRaisesRegex(ValueError, "platform"):
             self.build_manifest(invalid_platforms)
+
+
+class ReleaseCliSecurityTests(unittest.TestCase):
+    def test_cli_does_not_delegate_filesystem_authority_to_arguments(self) -> None:
+        def option_strings(parser: argparse.ArgumentParser) -> set[str]:
+            options: set[str] = set()
+            for action in parser._actions:
+                options.update(action.option_strings)
+                if isinstance(action, argparse._SubParsersAction):
+                    for subparser in action.choices.values():
+                        options.update(option_strings(subparser))
+            return options
+
+        options = option_strings(release._build_parser())
+
+        self.assertTrue(
+            {"--config", "--existing-tags", "--artifacts-dir", "--manifest", "--changes"}.isdisjoint(
+                options
+            )
+        )
+        self.assertIn("--existing-tags-stdin", options)
+
+    def test_validate_tag_reads_existing_versions_from_stdin(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout), mock.patch.object(
+            release.sys, "stdin", io.StringIO("v4.0.5-pg17.5\nv5.0.0\n")
+        ):
+            result = release.main(["validate-tag", "v5.1.0-rc.1", "--existing-tags-stdin"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(stdout.getvalue(), "v5.1.0-rc.1\n")
 
 
 class WorkflowContractTests(unittest.TestCase):

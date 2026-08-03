@@ -15,6 +15,9 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / ".github" / "release-matrix.json"
+CANDIDATE_ARTIFACTS_DIR = ROOT / "candidate-evidence"
+RELEASE_MANIFEST = ROOT / "release-manifest.json"
+GENERATED_CHANGES = ROOT / "generated-changes.md"
 OCI_TAG_MAX_LENGTH = 128
 GITHUB_MATRIX_MAX_JOBS = 256
 RELEASE_EPOCH_MAJOR = 5
@@ -408,7 +411,6 @@ def compact_json(value: object) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     matrix = subparsers.add_parser("matrix")
@@ -416,7 +418,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     validate_tag = subparsers.add_parser("validate-tag")
     validate_tag.add_argument("tag")
-    validate_tag.add_argument("--existing-tags", type=Path)
+    validate_tag.add_argument("--existing-tags-stdin", action="store_true")
 
     subparsers.add_parser("suffixes")
     platforms = subparsers.add_parser("platforms")
@@ -426,11 +428,8 @@ def _build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--base-tag", required=True)
     manifest.add_argument("--source-sha", required=True)
     manifest.add_argument("--repository", required=True)
-    manifest.add_argument("--artifacts-dir", type=Path, required=True)
 
-    notes = subparsers.add_parser("notes")
-    notes.add_argument("--manifest", type=Path, required=True)
-    notes.add_argument("--changes", type=Path, required=True)
+    subparsers.add_parser("notes")
 
     title = subparsers.add_parser("title")
     title.add_argument("tag")
@@ -441,13 +440,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        config = load_config(args.config)
+        config = load_config()
         if args.command == "matrix":
             print(compact_json(build_matrix(config, args.kind)))
         elif args.command == "validate-tag":
             print(validate_release_tag(args.tag, config))
-            if args.existing_tags:
-                existing = args.existing_tags.read_text(encoding="utf-8").splitlines()
+            if args.existing_tags_stdin:
+                existing = sys.stdin.read().splitlines()
                 validate_release_order(args.tag, existing)
         elif args.command == "suffixes":
             print("\n".join(image_suffixes(config)))
@@ -459,7 +458,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print("\n".join(config["platforms"]))
         elif args.command == "manifest":
-            artifacts = _load_candidate_artifacts(args.artifacts_dir)
+            artifacts = _load_candidate_artifacts(CANDIDATE_ARTIFACTS_DIR)
             manifest = build_release_manifest(
                 base_tag=args.base_tag,
                 source_sha=args.source_sha,
@@ -469,8 +468,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(compact_json(manifest))
         elif args.command == "notes":
-            manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
-            changes = args.changes.read_text(encoding="utf-8")
+            manifest = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
+            changes = GENERATED_CHANGES.read_text(encoding="utf-8")
             print(render_release_notes(manifest=manifest, changes=changes))
         elif args.command == "title":
             print(release_title(args.tag, config))

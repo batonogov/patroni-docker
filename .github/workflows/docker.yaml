@@ -71,14 +71,11 @@ jobs:
           is_publish=false
 
           if [[ "$REF_TYPE" == tag ]]; then
-            : >"${RUNNER_TEMP}/existing-release-tags"
-            while IFS= read -r existing_tag; do
+            git tag --list | while IFS= read -r existing_tag; do
               if [[ "$existing_tag" != "$REF_NAME" ]]; then
-                printf '%s\n' "$existing_tag" >>"${RUNNER_TEMP}/existing-release-tags"
+                printf '%s\n' "$existing_tag"
               fi
-            done < <(git tag --list)
-            python3 scripts/release.py validate-tag "$REF_NAME" \
-              --existing-tags "${RUNNER_TEMP}/existing-release-tags"
+            done | python3 scripts/release.py validate-tag "$REF_NAME" --existing-tags-stdin
             final_base="$REF_NAME"
             release_tag="$REF_NAME"
             is_release=true
@@ -549,7 +546,6 @@ jobs:
             --base-tag "$FINAL_BASE" \
             --source-sha "$SOURCE_SHA" \
             --repository "$GITHUB_REPOSITORY" \
-            --artifacts-dir candidate-evidence \
             | jq . >release-manifest.json
 
       - name: Promote only closed digests and verify final evidence
@@ -689,10 +685,7 @@ jobs:
           gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f tag_name="$RELEASE_TAG" \
             --jq .body >generated-changes.md
-          python3 scripts/release.py notes \
-            --manifest release-manifest.json \
-            --changes generated-changes.md \
-            >release-notes.md
+          python3 scripts/release.py notes >release-notes.md
 
       - name: Create GitHub Release only after every image is verified
         env:
