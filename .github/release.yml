@@ -1,0 +1,25 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: 🚀 Features
+      labels:
+        - enhancement
+        - feature
+    - title: 🛡️ Security and reliability
+      labels:
+        - security
+        - reliability
+        - bug
+    - title: 📦 Dependencies
+      labels:
+        - dependencies
+    - title: 🧰 Maintenance
+      labels:
+        - documentation
+        - maintenance
+        - chore
+    - title: Other changes
+      labels:
+        - '*'

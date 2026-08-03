@@ -1,110 +1,193 @@
-name: Build Docker images and push to ghcr.io
+name: Build, verify, and release container images
 
 on:
   push:
     branches:
       - main
     tags:
-      - '*'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Image tag
-        required: false
-        default: ''
+      - v[0-9]*.[0-9]*.[0-9]*
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: containers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
 
 env:
-
-  # github.repository as <account>/<repo>
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
+  prepare:
+    name: Prepare release metadata
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    strategy:
-      matrix:
-        platform: [linux/amd64, linux/arm64]
-        distro: [trixie, alpine]
-        pg_version: ['17.10', '18.4']
-        patroni_version: [4.0.7]
-
+    outputs:
+      validation_matrix: ${{ steps.release.outputs.validation_matrix }}
+      publish_matrix: ${{ steps.release.outputs.publish_matrix }}
+      final_base: ${{ steps.release.outputs.final_base }}
+      is_release: ${{ steps.release.outputs.is_release }}
+      is_publish: ${{ steps.release.outputs.is_publish }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      source_date: ${{ steps.release.outputs.source_date }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up QEMU
-        if: ${{ matrix.platform }} == 'linux/arm64'
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Validate config and event authority
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
 
-      - name: Log into GITHUB registry
-        if: github.event_name != 'pull_request'
+          validation_matrix="$(python3 scripts/release.py matrix --kind validate)"
+          publish_matrix="$(python3 scripts/release.py matrix --kind publish)"
+          final_base=validation
+          is_publish=false
+          is_release=false
+          release_tag=
+
+          if [[ "$EVENT_NAME" == push && "$REF" == refs/heads/main ]]; then
+            final_base=main
+            is_publish=true
+          elif [[ "$EVENT_NAME" == push && "$REF_TYPE" == tag ]]; then
+            python3 scripts/release.py validate-tag "$REF_NAME"
+            git merge-base --is-ancestor "$SOURCE_SHA" origin/main || {
+              echo "Release tags must point to a commit reachable from main" >&2
+              exit 1
+            }
+            final_base="$REF_NAME"
+            is_publish=true
+            is_release=true
+            release_tag="$REF_NAME"
+          elif [[ "$EVENT_NAME" == pull_request ]]; then
+            final_base="pr-${{ github.event.pull_request.number }}"
+          fi
+
+          source_date="$(git show -s --format=%cI "$SOURCE_SHA")"
+          {
+            echo "validation_matrix=$validation_matrix"
+            echo "publish_matrix=$publish_matrix"
+            echo "final_base=$final_base"
+            echo "is_publish=$is_publish"
+            echo "is_release=$is_release"
+            echo "release_tag=$release_tag"
+            echo "source_date=$source_date"
+            echo "source_sha=$SOURCE_SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  guard_release:
+    name: Protect immutable release tags
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require both registry credentials
+        if: needs.prepare.outputs.is_release == 'true'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "A stable release requires both Docker Hub credentials" >&2
+            exit 1
+          fi
+
+      - name: Log into GHCR
+        if: needs.prepare.outputs.is_release == 'true'
         uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check if Docker Hub secrets are set
-        id: check_secrets
-        run: |
-          if [ -n "${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}" ]; then
-          echo "secrets_available=true" >> $GITHUB_OUTPUT
-          else
-             echo "secrets_available=false" >> $GITHUB_OUTPUT
-          fi
+
       - name: Log into Docker Hub
-        if: steps.check_secrets.outputs.secrets_available == 'true'
+        if: needs.prepare.outputs.is_release == 'true'
         uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
           password: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
 
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/${{ env.IMAGE_NAME }}
-      - name: Debug tags
-        run: |
-          echo "Tags:"
-          for tag in ${{ steps.meta.outputs.tags }}; do
-          echo "$tag"
-          done
-      - name: Extract tags without registry and image name
-        id: extract-tags
-        run: |
-          echo "${{ steps.meta.outputs.tags }}" |  tr ',' '\n' | sed 's|.*/||; s|.*:||' > tags.txt
-          echo "TAGS=$(cat tags.txt | tr '\n' ',' | sed 's|,$||')" >> $GITHUB_ENV
-      - name: Override base tag with custom input (if provided)
-        run: |
-          BASE_TAG="${{ env.TAGS }}"
-          if [ -n "${{ inputs.tag }}" ]; then
-            BASE_TAG="${{ inputs.tag }}"
-            echo "Custom tag '${{ inputs.tag }}' will be use as base tag"
-          else
-            echo "Custom tag is not set → use tag from metadata: $BASE_TAG"
-          fi
-          echo "BASE_TAG=$BASE_TAG" >> $GITHUB_ENV
+      - name: Set up Docker Buildx
+        if: needs.prepare.outputs.is_release == 'true'
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Build final LOWER_IMAGE_TAG
+      - name: Refuse to overwrite an existing release
+        if: needs.prepare.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
         run: |
-          FINAL="${{ env.IMAGE_NAME }}:${BASE_TAG}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}"
-          echo "LOWER_IMAGE_TAG=$(echo "$FINAL" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-          echo "Final tag → ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
-      - name: Export final base tag
-        id: set-tag
-        run: echo "tag=${BASE_TAG}" >> $GITHUB_OUTPUT
-      - name: Build Docker image for platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
-        id: build_image
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" >release.out 2>release.err; then
+            echo "GitHub Release $RELEASE_TAG already exists; release tags are immutable" >&2
+            exit 1
+          elif ! grep -qi 'release not found' release.err; then
+            cat release.err >&2
+            exit 1
+          fi
+
+          inspect_absent() {
+            local ref="$1"
+            if docker buildx imagetools inspect "$ref" >inspect.out 2>inspect.err; then
+              echo "Image tag already exists and will not be overwritten: $ref" >&2
+              exit 1
+            fi
+            if ! grep -Eqi 'not found|manifest unknown|name unknown' inspect.err; then
+              echo "Could not safely determine whether $ref exists" >&2
+              cat inspect.err >&2
+              exit 1
+            fi
+          }
+
+          while IFS= read -r suffix; do
+            inspect_absent "ghcr.io/${IMAGE_NAME}:${RELEASE_TAG}-${suffix}"
+            inspect_absent "docker.io/${IMAGE_NAME}:${RELEASE_TAG}-${suffix}"
+          done < <(python3 scripts/release.py suffixes)
+
+  validate:
+    name: Test ${{ matrix.platform }} · PG ${{ matrix.pg_version }} · ${{ matrix.distro }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.validation_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        if: matrix.platform == 'linux/arm64'
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build test image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -114,70 +197,360 @@ jobs:
             PG_VERSION=${{ matrix.pg_version }}
             PATRONI_VERSION=${{ matrix.patroni_version }}
             GITHUB_REPOSITORY=${{ github.repository }}
-            GITHUB_SHA=${{ github.sha }}
+            GITHUB_SHA=${{ needs.prepare.outputs.source_sha }}
           platforms: ${{ matrix.platform }}
-          load: ${{ github.event_name == 'pull_request' }}
+          load: true
           push: false
-          tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Test Docker image platform ${{ matrix.platform }} Distribution ${{ matrix.distro }} PostgreSQL ${{ matrix.pg_version }} Patroni ${{ matrix.patroni_version }}
-        if: github.event_name == 'pull_request'
-        run: |
-          IMAGE="ghcr.io/${{ env.LOWER_IMAGE_TAG }}"
-          echo "Testing image: $IMAGE  (platform: ${{ matrix.platform }})"
-          if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
-            echo "ARM64 → use QEMU"
-            docker run --rm --platform linux/arm64 "$IMAGE" patroni --version
-            docker run --rm --platform linux/arm64 --entrypoint /bin/sh "$IMAGE" -c 'postgres --version'
-          else
-            docker run --rm "$IMAGE" patroni --version
-            docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'postgres --version'
-          fi
-      - name: Scan image for vulnerabilities (Trivy)
-        if: github.event_name == 'pull_request'
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
-        with:
-          image-ref: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
-          severity: HIGH,CRITICAL
-          exit-code: '1'
-          ignore-unfixed: true
-      - name: Push image to GITHUB registry
-        id: push-ghcr
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          build-args: |
-            DISTRO=${{ matrix.distro }}
-            PG_VERSION=${{ matrix.pg_version }}
-            PATRONI_VERSION=${{ matrix.patroni_version }}
-            GITHUB_REPOSITORY=${{ github.repository }}
-            GITHUB_SHA=${{ github.sha }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ env.LOWER_IMAGE_TAG }}
+          tags: local/patroni:${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}-${{ strategy.job-index }}
+          labels: |
+            org.opencontainers.image.title=Patroni ${{ matrix.patroni_version }} with PostgreSQL ${{ matrix.pg_version }} (${{ matrix.distro }})
+            org.opencontainers.image.description=Patroni high-availability PostgreSQL container image
+            org.opencontainers.image.version=${{ needs.prepare.outputs.final_base }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.source_date }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
+          cache-from: type=gha,scope=validate-${{ matrix.platform }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
+          cache-to: type=gha,mode=max,scope=validate-${{ matrix.platform }}-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
 
-      - name: Push image to Docker Hub
-        if: steps.check_secrets.outputs.secrets_available == 'true'
+      - name: Smoke-test Patroni and PostgreSQL
+        env:
+          IMAGE: local/patroni:${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}-${{ strategy.job-index }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform "$PLATFORM" "$IMAGE" patroni --version
+          docker run --rm --platform "$PLATFORM" --entrypoint /bin/sh "$IMAGE" -c 'postgres --version'
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.73.0
+          cache: true
+
+      - name: Scan test image
+        env:
+          IMAGE: local/patroni:${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}-${{ strategy.job-index }}
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            "$IMAGE"
+
+  publish_candidates:
+    name: Candidate · PG ${{ matrix.pg_version }} · ${{ matrix.distro }}
+    if: needs.prepare.outputs.is_publish == 'true'
+    needs:
+      - prepare
+      - guard_release
+      - validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.publish_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require both registry credentials
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "Publishing requires both Docker Hub credentials" >&2
+            exit 1
+          fi
+
+      - name: Log into GHCR
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log into Docker Hub
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Define candidate image tags
+        id: tags
+        env:
+          PG_VERSION: ${{ matrix.pg_version }}
+          PATRONI_VERSION: ${{ matrix.patroni_version }}
+          DISTRO: ${{ matrix.distro }}
+          FINAL_BASE: ${{ needs.prepare.outputs.final_base }}
+        run: |
+          set -euo pipefail
+          suffix="${PG_VERSION}-${PATRONI_VERSION}-${DISTRO}"
+          candidate="candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+          final="${FINAL_BASE}-${suffix}"
+          {
+            echo "candidate=${candidate,,}"
+            echo "final=${final,,}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push one multi-platform candidate
+        id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
+          file: Dockerfile
           build-args: |
             DISTRO=${{ matrix.distro }}
             PG_VERSION=${{ matrix.pg_version }}
             PATRONI_VERSION=${{ matrix.patroni_version }}
             GITHUB_REPOSITORY=${{ github.repository }}
-            GITHUB_SHA=${{ github.sha }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: docker.io/${{ env.LOWER_IMAGE_TAG }}
+            GITHUB_SHA=${{ needs.prepare.outputs.source_sha }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.candidate }}
+            docker.io/${{ env.IMAGE_NAME }}:${{ steps.tags.outputs.candidate }}
+          labels: |
+            org.opencontainers.image.title=Patroni ${{ matrix.patroni_version }} with PostgreSQL ${{ matrix.pg_version }} (${{ matrix.distro }})
+            org.opencontainers.image.description=Patroni high-availability PostgreSQL container image
+            org.opencontainers.image.version=${{ steps.tags.outputs.final }}
+            org.opencontainers.image.created=${{ needs.prepare.outputs.source_date }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=publish-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
+          cache-to: type=gha,mode=max,scope=publish-${{ matrix.pg_version }}-${{ matrix.patroni_version }}-${{ matrix.distro }}
+
+      - name: Resolve registry digests
+        id: digests
+        env:
+          CANDIDATE: ${{ steps.tags.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          ghcr_manifest="$(docker buildx imagetools inspect "ghcr.io/${IMAGE_NAME}:${CANDIDATE}" --format '{{json .Manifest}}')"
+          docker_manifest="$(docker buildx imagetools inspect "docker.io/${IMAGE_NAME}:${CANDIDATE}" --format '{{json .Manifest}}')"
+          ghcr_digest="$(jq -er '.digest' <<<"$ghcr_manifest")"
+          docker_digest="$(jq -er '.digest' <<<"$docker_manifest")"
+          {
+            echo "ghcr=$ghcr_digest"
+            echo "docker=$docker_digest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.73.0
+          cache: true
+
+      - name: Scan exact published platform digests
+        env:
+          GHCR_DIGEST: ${{ steps.digests.outputs.ghcr }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            trivy image \
+              --exit-code 1 \
+              --ignore-unfixed \
+              --platform "$platform" \
+              --severity HIGH,CRITICAL \
+              "ghcr.io/${IMAGE_NAME}@${GHCR_DIGEST}"
+          done
+
+      - name: Attest GHCR build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ghcr.io/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.digests.outputs.ghcr }}
+          push-to-registry: true
 
       - name: Install cosign
-        if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Sign published GHCR image
-        if: github.event_name != 'pull_request'
+      - name: Sign both candidate digests
         env:
-          DIGEST: ${{ steps.push-ghcr.outputs.digest }}
+          GHCR_DIGEST: ${{ steps.digests.outputs.ghcr }}
+          DOCKER_DIGEST: ${{ steps.digests.outputs.docker }}
         run: |
-          cosign sign --yes "ghcr.io/${{ env.IMAGE_NAME }}@${DIGEST}"
+          set -euo pipefail
+          cosign sign --yes "ghcr.io/${IMAGE_NAME}@${GHCR_DIGEST}"
+          cosign sign --yes "docker.io/${IMAGE_NAME}@${DOCKER_DIGEST}"
+
+  promote:
+    name: Promote verified images
+    if: needs.prepare.outputs.is_publish == 'true'
+    needs:
+      - prepare
+      - publish_candidates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      artifacts: ${{ steps.promote.outputs.artifacts }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log into GHCR
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log into Docker Hub
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_REGISTRY_PASSWORD }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Promote candidates and record immutable digests
+        id: promote
+        env:
+          FINAL_BASE: ${{ needs.prepare.outputs.final_base }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-artifacts
+
+          verify_index() {
+            local manifest_file="$1"
+            for architecture in amd64 arm64; do
+              jq -e \
+                --arg architecture "$architecture" \
+                '.manifests | any(.platform.os == "linux" and .platform.architecture == $architecture)' \
+                "$manifest_file" >/dev/null || {
+                  echo "Published index is missing linux/$architecture" >&2
+                  exit 1
+                }
+            done
+          }
+
+          index=0
+          while IFS=$'\t' read -r pg_version patroni_version distro; do
+            suffix="${pg_version}-${patroni_version}-${distro}"
+            candidate="candidate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${suffix}"
+            final_tag="${FINAL_BASE}-${suffix}"
+            ghcr_candidate="ghcr.io/${IMAGE_NAME}:${candidate}"
+            docker_candidate="docker.io/${IMAGE_NAME}:${candidate}"
+            ghcr_final="ghcr.io/${IMAGE_NAME}:${final_tag}"
+            docker_final="docker.io/${IMAGE_NAME}:${final_tag}"
+
+            docker buildx imagetools create --tag "$ghcr_final" "$ghcr_candidate"
+            docker buildx imagetools create --tag "$docker_final" "$docker_candidate"
+
+            docker buildx imagetools inspect "$ghcr_final" --format '{{json .Manifest}}' >ghcr-manifest.json
+            docker buildx imagetools inspect "$docker_final" --format '{{json .Manifest}}' >docker-manifest.json
+            verify_index ghcr-manifest.json
+            verify_index docker-manifest.json
+            ghcr_digest="$(jq -er '.digest' ghcr-manifest.json)"
+            docker_digest="$(jq -er '.digest' docker-manifest.json)"
+
+            jq -n \
+              --arg pg_version "$pg_version" \
+              --arg patroni_version "$patroni_version" \
+              --arg distro "$distro" \
+              --arg tag "$final_tag" \
+              --arg ghcr_digest "$ghcr_digest" \
+              --arg docker_digest "$docker_digest" \
+              '{
+                pg_version: $pg_version,
+                patroni_version: $patroni_version,
+                distro: $distro,
+                tag: $tag,
+                ghcr_digest: $ghcr_digest,
+                docker_digest: $docker_digest
+              }' >"release-artifacts/${index}.json"
+            index=$((index + 1))
+          done < <(
+            python3 scripts/release.py matrix --kind publish \
+              | jq -r '.include[] | [.pg_version, .patroni_version, .distro] | @tsv'
+          )
+
+          jq -s 'sort_by(.pg_version, .distro)' release-artifacts/*.json >release-artifacts.json
+          echo "artifacts=$(jq -c . release-artifacts.json)" >> "$GITHUB_OUTPUT"
+
+  github_release:
+    name: Publish GitHub Release
+    if: needs.prepare.outputs.is_release == 'true'
+    needs:
+      - prepare
+      - promote
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Generate release notes
+        env:
+          ARTIFACTS: ${{ needs.promote.outputs.artifacts }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          artifacts = json.loads(os.environ["ARTIFACTS"])
+          Path("release-artifacts.json").write_text(
+              json.dumps(artifacts, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+          gh api \
+            --method POST \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$RELEASE_TAG" \
+            --jq '.body' >generated-changes.md
+
+          python3 scripts/release.py notes \
+            --tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --artifacts release-artifacts.json \
+            --changes generated-changes.md \
+            >release-notes.md
+
+      - name: Create GitHub Release only after every image is verified
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          title="$(python3 scripts/release.py title "$RELEASE_TAG")"
+          prerelease=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --title "$title" \
+            --notes-file release-notes.md \
+            "${prerelease[@]}"

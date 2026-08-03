@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "patroni_version": "4.0.7",
+  "postgres_versions": [
+    "17.10",
+    "18.4"
+  ],
+  "distros": [
+    "trixie",
+    "alpine"
+  ],
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ]
+}
